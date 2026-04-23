@@ -1,0 +1,124 @@
+{
+	"actorSpecification": 1,
+	"name": "cr-reminder",
+	"title": "Code Review Reminder",
+	"description": "Reminds developers about GitHub Pull Requests waiting for review and posts a compact, tagged message to Slack.",
+	"version": "2.0",
+	"buildTag": "latest",
+	"meta": {
+		"templateId": "ts-empty"
+	},
+	"dockerfile": "../Dockerfile",
+	"input": {
+		"schemaVersion": 1,
+		"title": "Input",
+		"type": "object",
+		"description": "Configure GitHub source (org + topic), Slack Bot destination, thresholds and mode.",
+		"properties": {
+			"githubToken": {
+				"title": "GitHub Token",
+				"type": "string",
+				"description": "Personal access token with repo read scope (classic: 'repo'; fine-grained: 'Pull requests: Read', 'Issues: Read', 'Metadata: Read').",
+				"editor": "textfield",
+				"isSecret": true
+			},
+			"githubOrg": {
+				"title": "GitHub Organization",
+				"type": "string",
+				"description": "GitHub organization whose repositories should be scanned (e.g., 'apify-store').",
+				"editor": "textfield"
+			},
+			"githubTopic": {
+				"title": "GitHub Topic",
+				"type": "string",
+				"description": "Only repositories in the org that carry this topic are scanned (e.g., 'apify-actor').",
+				"editor": "textfield"
+			},
+			"slackBotToken": {
+				"title": "Slack Bot Token",
+				"type": "string",
+				"description": "Slack Bot User OAuth Token (xoxb-...). See SLACK_SETUP.md for step-by-step instructions.",
+				"editor": "textfield",
+				"isSecret": true
+			},
+			"slackChannelId": {
+				"title": "Slack Channel ID",
+				"type": "string",
+				"description": "Destination channel ID (e.g., C01234567). Right-click channel → 'Copy channel ID'.",
+				"editor": "textfield"
+			},
+			"userMapping": {
+				"title": "GitHub → Slack user mapping",
+				"type": "object",
+				"description": "Map GitHub logins to Slack user IDs so authors can be properly @-tagged. Example: { \"radimkvet\": \"U123ABC456\" }",
+				"editor": "json",
+				"default": {}
+			},
+			"mode": {
+				"title": "Mode",
+				"type": "string",
+				"enum": ["overdue", "all"],
+				"enumTitles": ["Overdue only", "All open PRs"],
+				"default": "overdue",
+				"description": "'overdue' lists only PRs older than overdueThresholdDays; 'all' lists every eligible open PR.",
+				"editor": "select"
+			},
+			"overdueThresholdDays": {
+				"title": "Overdue Threshold (days)",
+				"type": "integer",
+				"default": 3,
+				"minimum": 0,
+				"editor": "number",
+				"description": "In 'overdue' mode, PRs waiting less than this many days are hidden."
+			},
+			"sendEmptyReport": {
+				"title": "Send Empty Report",
+				"type": "boolean",
+				"default": false,
+				"description": "If true, post 'no open PRs' message when nothing is overdue. If false, skip Slack entirely.",
+				"editor": "checkbox"
+			},
+			"headerText": {
+				"title": "Header Text",
+				"type": "string",
+				"default": "Pull requests in review:",
+				"description": "Slack message header line.",
+				"editor": "textfield"
+			},
+			"ignoreLabels": {
+				"title": "Ignore Labels",
+				"type": "array",
+				"items": { "type": "string" },
+				"editor": "stringList",
+				"default": ["blocked"],
+				"description": "PRs (or linked issues) carrying any of these labels are skipped. Labels are case-sensitive, matching GitHub."
+			},
+			"warningThresholdDays": {
+				"title": "Warning Threshold (days)",
+				"type": "integer",
+				"default": 3,
+				"minimum": 0,
+				"editor": "number",
+				"description": "PRs waiting ≥ this many days get :warning:.",
+				"sectionCaption": "Severity Thresholds",
+				"sectionDescription": "Controls the emoji shown next to each PR. warning ≤ scream."
+			},
+			"screamThresholdDays": {
+				"title": "Scream Threshold (days)",
+				"type": "integer",
+				"default": 7,
+				"minimum": 0,
+				"editor": "number",
+				"description": "PRs waiting ≥ this many days get :scream:."
+			}
+		},
+		"required": [
+			"githubToken",
+			"githubOrg",
+			"githubTopic",
+			"slackBotToken",
+			"slackChannelId",
+			"sendEmptyReport"
+		]
+	}
+}
