@@ -1,0 +1,17 @@
+{
+	"_comment": "GitHub login -> Slack user ID. Get the ID in Slack: click the person's avatar -> More -> Copy member ID. An entry may also be written as { \"slackId\": \"U123ABC\", \"name\": \"Jane Doe\" } when you want the names in here too. Keys starting with an underscore are ignored.",
+	"metalwarrior665": "U7JTQC360",
+	"JMatej": "U098H0556FL",
+	"radimkvet": "U0ABWS1986Q",
+	"yaroslav-tykhovetskyi-apify": "U095KE1LD0R",
+	"oklinov": "U05H7KZUJUV",
+	"gytelio": "U0ANF0083SR",
+	"artogahr": "U0B434JALCQ",
+	"kazadoiyul": "U08V8ECM8KA",
+	"poshengchiang": "U09PLRRJ7QE",
+	"Patai5": "U05FAAVEB3J",
+	"foxt451": "U04CUJZ8F9D",
+	"AlexLav3": "U0ANFRM1RNJ",
+	"ruocco-l": "U07PD053BK9",
+	"JuanGalilea": "U09EHJ0SZUJ"
+}

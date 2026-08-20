@@ -1,0 +1,55 @@
+{
+  "$schema": "c:/_PROJEKTY/tools-dashboard/dashboard.schema.json",
+  "id": "cr-reminder-2",
+  "name": "Code Review Reminder v2",
+  "description": "Scans open GitHub Pull Requests awaiting review and posts a compact, tagged reminder to Slack. Tracks both the total age and the current review round (weekends excluded), shows how many reviewers have approved, and routes bot-authored PRs to the assignee of the linked ticket.",
+  "type": "apify",
+  "category": "monitoring",
+  "icon": "Bell",
+  "tags": [
+    "github",
+    "slack",
+    "code-review",
+    "pull-requests",
+    "reminder"
+  ],
+  "status": "active",
+  "apify": {
+    "actorId": "YOUR_USERNAME/cr-reminder-2",
+    "defaultInput": {
+      "githubOrg": "apify-store",
+      "githubTopic": "google-team",
+      "slackChannelId": "C01234567",
+      "userMappingFile": "user-mapping.json",
+      "userMapping": {},
+      "mode": "overdue",
+      "overdueThresholdHours": 24,
+      "warningThresholdHours": 72,
+      "screamThresholdHours": 168,
+      "iterationOverdueThresholdHours": 24,
+      "iterationWarningThresholdHours": 72,
+      "iterationScreamThresholdHours": 168,
+      "requireLinkedIssue": false,
+      "skipWeekends": true,
+      "timeZone": "Europe/Prague",
+      "sendEmptyReport": false,
+      "headerText": "Pull requests in review:",
+      "ignoreLabels": [
+        "blocked"
+      ]
+    },
+    "outputConfig": {
+      "hasDataset": true,
+      "hasKvStore": false,
+      "externalOutputs": [
+        {
+          "label": "Slack",
+          "type": "slack"
+        }
+      ]
+    }
+  },
+  "local": {
+    "path": "c:/_PROJEKTY/cr-reminder2"
+  }
+}

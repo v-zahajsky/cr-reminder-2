@@ -1,9 +1,9 @@
-import { log } from 'apify';
-import { Octokit } from '@octokit/rest';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
+import { Octokit } from '@octokit/rest';
+import { log } from 'apify';
 
-import type { PrRecord, RepoRef } from '../types.js';
+import type { IssueDetails, PrRecord, RepoRef } from '../types.js';
 
 const OctokitWithPlugins = Octokit.plugin(retry, throttling);
 
@@ -16,11 +16,28 @@ export interface RawPullRequest {
 	created_at: string;
 	draft: boolean;
 	labels: { name: string }[];
+	/** Only reviewers who have NOT submitted a review yet — GitHub drops them once they do. */
+	requested_reviewers: { login: string }[];
+	requested_teams: { slug: string }[];
+}
+
+export interface RawReview {
+	login: string;
+	/** APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED */
+	state: string;
+	submittedAt: string;
+}
+
+export interface ReviewTimestamps {
+	/** Latest 'ready for review' event, null if the PR was never a draft. */
+	readyForReviewAt: string | null;
+	/** Latest 'review requested' event — starts a new review round. */
+	lastReviewRequestedAt: string | null;
 }
 
 export class GithubClient {
 	private readonly octokit: InstanceType<typeof OctokitWithPlugins>;
-	private readonly issueLabelCache = new Map<string, string[]>();
+	private readonly issueCache = new Map<string, IssueDetails>();
 
 	constructor(token: string) {
 		this.octokit = new OctokitWithPlugins({
@@ -77,13 +94,19 @@ export class GithubClient {
 					labels: (p.labels || []).map((l: { name?: string } | string) =>
 						typeof l === 'string' ? { name: l } : { name: l.name ?? '' },
 					),
+					requested_reviewers: (p.requested_reviewers || []).map((u) => ({ login: u.login })),
+					requested_teams: (p.requested_teams || []).map((t) => ({ slug: t.slug })),
 				});
 			}
 		}
 		return out;
 	}
 
-	async getLatestReadyForReviewAt(repo: RepoRef, prNumber: number): Promise<string | null> {
+	/**
+	 * Both timestamps come from a single timeline read: when the PR last became reviewable,
+	 * and when a review was last requested (which opens a new review round).
+	 */
+	async getReviewTimestamps(repo: RepoRef, prNumber: number): Promise<ReviewTimestamps> {
 		try {
 			const events = await this.octokit.paginate(this.octokit.rest.issues.listEventsForTimeline, {
 				owner: repo.owner,
@@ -91,25 +114,55 @@ export class GithubClient {
 				issue_number: prNumber,
 				per_page: 100,
 			});
-			let latest: string | null = null;
+			let readyForReviewAt: string | null = null;
+			let lastReviewRequestedAt: string | null = null;
 			for (const ev of events) {
-				if ((ev as { event?: string }).event === 'ready_for_review') {
-					const createdAt = (ev as { created_at?: string }).created_at ?? null;
-					if (createdAt && (!latest || createdAt > latest)) latest = createdAt;
+				const e = ev as { event?: string; created_at?: string };
+				if (!e.created_at) continue;
+				if (e.event === 'ready_for_review') {
+					if (!readyForReviewAt || e.created_at > readyForReviewAt) readyForReviewAt = e.created_at;
+				} else if (e.event === 'review_requested') {
+					if (!lastReviewRequestedAt || e.created_at > lastReviewRequestedAt) {
+						lastReviewRequestedAt = e.created_at;
+					}
 				}
 			}
-			return latest;
+			return { readyForReviewAt, lastReviewRequestedAt };
 		} catch (err) {
 			log.warning(
 				`Failed to fetch timeline for ${repo.owner}/${repo.name}#${prNumber}: ${(err as Error).message}`,
 			);
-			return null;
+			return { readyForReviewAt: null, lastReviewRequestedAt: null };
 		}
 	}
 
-	async getIssueLabels(repo: RepoRef, issueNumber: number): Promise<string[]> {
+	async listReviews(repo: RepoRef, prNumber: number): Promise<RawReview[]> {
+		try {
+			const reviews = await this.octokit.paginate(this.octokit.rest.pulls.listReviews, {
+				owner: repo.owner,
+				repo: repo.name,
+				pull_number: prNumber,
+				per_page: 100,
+			});
+			const out: RawReview[] = [];
+			for (const r of reviews) {
+				const login = r.user?.login;
+				if (!login || !r.submitted_at) continue;
+				out.push({ login, state: r.state, submittedAt: r.submitted_at });
+			}
+			return out;
+		} catch (err) {
+			log.warning(
+				`Failed to fetch reviews for ${repo.owner}/${repo.name}#${prNumber}: ${(err as Error).message}`,
+			);
+			return [];
+		}
+	}
+
+	/** Labels gate the PR; assignees tell us who to tag when a bot opened it. Both come from one call. */
+	async getIssueDetails(repo: RepoRef, issueNumber: number): Promise<IssueDetails> {
 		const key = `${repo.owner}/${repo.name}#${issueNumber}`;
-		const cached = this.issueLabelCache.get(key);
+		const cached = this.issueCache.get(key);
 		if (cached) return cached;
 		try {
 			const { data } = await this.octokit.rest.issues.get({
@@ -118,12 +171,20 @@ export class GithubClient {
 				issue_number: issueNumber,
 			});
 			const labels = (data.labels || []).map((l) => (typeof l === 'string' ? l : (l.name ?? '')));
-			this.issueLabelCache.set(key, labels);
-			return labels;
+			// data.assignee is the primary one and is repeated in data.assignees; keep it first.
+			const assignees: string[] = [];
+			if (data.assignee?.login) assignees.push(data.assignee.login);
+			for (const a of data.assignees || []) {
+				if (a.login && !assignees.includes(a.login)) assignees.push(a.login);
+			}
+			const details: IssueDetails = { labels, assignees };
+			this.issueCache.set(key, details);
+			return details;
 		} catch (err) {
 			log.warning(`Failed to fetch issue ${key}: ${(err as Error).message}`);
-			this.issueLabelCache.set(key, []);
-			return [];
+			const empty: IssueDetails = { labels: [], assignees: [] };
+			this.issueCache.set(key, empty);
+			return empty;
 		}
 	}
 }

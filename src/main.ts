@@ -15,8 +15,10 @@ try {
 	await run();
 	log.info('Run finished successfully');
 } catch (err) {
-	log.exception(err as Error, 'Actor run failed');
-	throw err;
+	const error = err as Error;
+	log.error(`Actor run failed: ${error.message}`);
+	log.debug(error.stack ?? '');
+	await Actor.fail(error.message);
 }
 
 await Actor.exit();

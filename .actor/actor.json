@@ -13,7 +13,7 @@
 		"schemaVersion": 1,
 		"title": "Input",
 		"type": "object",
-		"description": "Configure GitHub source (org + topic), Slack Bot destination, thresholds and mode.",
+		"description": "Configure GitHub source (org + topic), Slack Bot destination, working-time thresholds and mode.",
 		"properties": {
 			"githubToken": {
 				"title": "GitHub Token",
@@ -48,9 +48,9 @@
 				"editor": "textfield"
 			},
 			"userMapping": {
-				"title": "GitHub → Slack user mapping",
+				"title": "User mapping overrides",
 				"type": "object",
-				"description": "Map GitHub logins to Slack user IDs so authors can be properly @-tagged. Example: { \"radimkvet\": \"U123ABC456\" }",
+				"description": "Optional overrides layered on top of the mapping file — handy to fix or add one person without redeploying. Example: { \"radimkvet\": \"U123ABC456\" }",
 				"editor": "json",
 				"default": {}
 			},
@@ -60,16 +60,8 @@
 				"enum": ["overdue", "all"],
 				"enumTitles": ["Overdue only", "All open PRs"],
 				"default": "overdue",
-				"description": "'overdue' lists only PRs older than overdueThresholdDays; 'all' lists every eligible open PR.",
+				"description": "'overdue' lists only PRs past overdueThresholdHours or iterationOverdueThresholdHours; 'all' lists every eligible open PR.",
 				"editor": "select"
-			},
-			"overdueThresholdDays": {
-				"title": "Overdue Threshold (days)",
-				"type": "integer",
-				"default": 3,
-				"minimum": 0,
-				"editor": "number",
-				"description": "In 'overdue' mode, PRs waiting less than this many days are hidden."
 			},
 			"sendEmptyReport": {
 				"title": "Send Empty Report",
@@ -88,37 +80,103 @@
 			"ignoreLabels": {
 				"title": "Ignore Labels",
 				"type": "array",
-				"items": { "type": "string" },
+				"items": {
+					"type": "string"
+				},
 				"editor": "stringList",
 				"default": ["blocked"],
-				"description": "PRs (or linked issues) carrying any of these labels are skipped. Labels are case-sensitive, matching GitHub."
+				"description": "PRs (or their linked issues) carrying any of these labels are skipped. Labels are case-sensitive, matching GitHub."
 			},
-			"warningThresholdDays": {
-				"title": "Warning Threshold (days)",
+			"overdueThresholdHours": {
+				"title": "Overdue Threshold (hours)",
 				"type": "integer",
-				"default": 3,
+				"default": 24,
 				"minimum": 0,
 				"editor": "number",
-				"description": "PRs waiting ≥ this many days get :warning:.",
+				"description": "In 'overdue' mode, a PR is reported once it has been waiting this many hours. The team baseline is 24 — somebody should have looked at every PR within a day of it becoming ready."
+			},
+			"warningThresholdHours": {
+				"title": "Warning Threshold (hours)",
+				"type": "integer",
+				"default": 72,
+				"minimum": 0,
+				"editor": "number",
+				"description": "PRs waiting >= this many hours get :warning:. Must be <= screamThresholdHours.",
 				"sectionCaption": "Severity Thresholds",
-				"sectionDescription": "Controls the emoji shown next to each PR. warning ≤ scream."
+				"sectionDescription": "Controls the emoji shown next to each PR. warning <= scream."
 			},
-			"screamThresholdDays": {
-				"title": "Scream Threshold (days)",
+			"screamThresholdHours": {
+				"title": "Scream Threshold (hours)",
 				"type": "integer",
-				"default": 7,
+				"default": 168,
 				"minimum": 0,
 				"editor": "number",
-				"description": "PRs waiting ≥ this many days get :scream:."
+				"description": "PRs waiting >= this many hours get :scream:."
+			},
+			"iterationOverdueThresholdHours": {
+				"title": "Iteration Overdue Threshold (hours)",
+				"type": "integer",
+				"default": 24,
+				"minimum": 0,
+				"editor": "number",
+				"description": "In 'overdue' mode a PR is reported when it breaches EITHER the total-age threshold OR this one, measured from the start of the current review round.",
+				"sectionCaption": "Current Review Round",
+				"sectionDescription": "A new round starts when a review is re-requested. These limits measure how long reviewers have been sitting on the current state, independent of the total PR age."
+			},
+			"iterationWarningThresholdHours": {
+				"title": "Iteration Warning Threshold (hours)",
+				"type": "integer",
+				"default": 72,
+				"minimum": 0,
+				"editor": "number",
+				"description": "Current round waiting >= this many hours gets :warning:. Must be <= iterationScreamThresholdHours."
+			},
+			"iterationScreamThresholdHours": {
+				"title": "Iteration Scream Threshold (hours)",
+				"type": "integer",
+				"default": 168,
+				"minimum": 0,
+				"editor": "number",
+				"description": "Current round waiting >= this many hours gets :scream:."
+			},
+			"skipWeekends": {
+				"title": "Skip weekends",
+				"type": "boolean",
+				"default": true,
+				"editor": "checkbox",
+				"description": "Exclude Saturdays and Sundays from every waiting time. A PR that goes ready on Friday afternoon is then still fresh on Monday morning.",
+				"sectionCaption": "Working time",
+				"sectionDescription": "Weekends are dead time for reviews; counting them makes every Monday look like a crisis."
+			},
+			"timeZone": {
+				"title": "Time zone",
+				"type": "string",
+				"default": "Europe/Prague",
+				"editor": "textfield",
+				"description": "IANA time zone deciding where the weekend boundaries fall (for example \"Europe/Prague\"). Only used when skipWeekends is on."
+			},
+			"requireLinkedIssue": {
+				"title": "Only report PRs linked to an issue",
+				"type": "boolean",
+				"default": false,
+				"editor": "checkbox",
+				"description": "When on, a PR whose description does not close an issue (for example \"Fixes #123\") is skipped entirely. Off by default: every PR in review is reported."
+			},
+			"userMappingFile": {
+				"title": "User mapping file",
+				"type": "string",
+				"default": "user-mapping.json",
+				"editor": "textfield",
+				"description": "Path (relative to the actor root) of the JSON file holding the GitHub login -> Slack user ID table. Keeping the table in a file means a growing team does not bloat the run input."
+			},
+			"newPrHeaderText": {
+				"title": "New PR section header",
+				"type": "string",
+				"default": "New PRs — nobody has looked at these yet:",
+				"editor": "textfield",
+				"description": "Heading for the separate block listing PRs that nobody has reviewed yet. The block is omitted when there are none."
 			}
 		},
-		"required": [
-			"githubToken",
-			"githubOrg",
-			"githubTopic",
-			"slackBotToken",
-			"slackChannelId",
-			"sendEmptyReport"
-		]
+		"required": ["githubToken", "githubOrg", "githubTopic", "slackBotToken", "slackChannelId", "sendEmptyReport"]
 	}
 }
