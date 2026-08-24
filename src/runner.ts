@@ -9,7 +9,7 @@ import { buildSlackMessage } from './message/builder.js';
 import type { InputSchema, Mode, PrRecord, RepoRef, ReviewSummary, Severity } from './types.js';
 import { parseLinkedIssueNumbers } from './utils/linked-issues.js';
 import { assertValidTimeZone, businessElapsedMs, humanDuration } from './utils/time.js';
-import { isBotLogin, parseUserMapping } from './utils/user-mapping.js';
+import { isBotLogin, parseUserMapping, resolveSlackId } from './utils/user-mapping.js';
 
 const HOUR_MS = 3_600_000;
 
@@ -19,6 +19,19 @@ const DEFAULT_WARNING_HOURS = 72;
 const DEFAULT_SCREAM_HOURS = 168;
 const DEFAULT_TIME_ZONE = 'Europe/Prague';
 const DEFAULT_USER_MAPPING_FILE = 'user-mapping.json';
+
+/** GitHub reports a null user for a deleted account; the tag and the self-review check must agree on the name. */
+const UNKNOWN_LOGIN = 'unknown';
+
+/** An unset threshold takes the fallback; a non-numeric one would silently make every comparison false. */
+function hoursOption(o: Record<string, unknown>, key: string, fallback: number): number {
+	const value = o[key];
+	if (value === undefined || value === null) return fallback;
+	if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+		throw new Error(`${key} must be a non-negative number, got ${JSON.stringify(value)}`);
+	}
+	return value;
+}
 
 export function validateInput(input: unknown): InputSchema {
 	if (!input || typeof input !== 'object') throw new Error('Input must be an object');
@@ -34,17 +47,17 @@ export function validateInput(input: unknown): InputSchema {
 	const mode = (o.mode as Mode | undefined) ?? 'overdue';
 	if (mode !== 'overdue' && mode !== 'all') throw new Error(`mode must be "overdue" or "all", got "${mode}"`);
 
-	const warning = (o.warningThresholdHours as number | undefined) ?? DEFAULT_WARNING_HOURS;
-	const scream = (o.screamThresholdHours as number | undefined) ?? DEFAULT_SCREAM_HOURS;
-	const overdue = (o.overdueThresholdHours as number | undefined) ?? DEFAULT_OVERDUE_HOURS;
+	const warning = hoursOption(o, 'warningThresholdHours', DEFAULT_WARNING_HOURS);
+	const scream = hoursOption(o, 'screamThresholdHours', DEFAULT_SCREAM_HOURS);
+	const overdue = hoursOption(o, 'overdueThresholdHours', DEFAULT_OVERDUE_HOURS);
 	if (warning > scream) {
 		throw new Error(`warningThresholdHours (${warning}) must be <= screamThresholdHours (${scream})`);
 	}
 
 	// Iteration limits default to the total-age limits, so an unconfigured actor behaves as before.
-	const iterWarning = (o.iterationWarningThresholdHours as number | undefined) ?? warning;
-	const iterScream = (o.iterationScreamThresholdHours as number | undefined) ?? scream;
-	const iterOverdue = (o.iterationOverdueThresholdHours as number | undefined) ?? overdue;
+	const iterWarning = hoursOption(o, 'iterationWarningThresholdHours', warning);
+	const iterScream = hoursOption(o, 'iterationScreamThresholdHours', scream);
+	const iterOverdue = hoursOption(o, 'iterationOverdueThresholdHours', overdue);
 	if (iterWarning > iterScream) {
 		throw new Error(
 			`iterationWarningThresholdHours (${iterWarning}) must be <= iterationScreamThresholdHours (${iterScream})`,
@@ -57,13 +70,15 @@ export function validateInput(input: unknown): InputSchema {
 	assertValidTimeZone(timeZone);
 
 	const userMappingFile = (o.userMappingFile as string | undefined) ?? DEFAULT_USER_MAPPING_FILE;
-	const userMapping = (o.userMapping as Record<string, string> | undefined) ?? {};
+	const userMapping = (o.userMapping as Record<string, unknown> | undefined) ?? {};
 	if (typeof userMapping !== 'object' || Array.isArray(userMapping)) {
 		throw new Error('userMapping must be an object { githubLogin: slackUserId }');
 	}
 
 	const ignoreLabels = (o.ignoreLabels as string[] | undefined) ?? ['blocked'];
-	if (!Array.isArray(ignoreLabels)) throw new Error('ignoreLabels must be a string array');
+	if (!Array.isArray(ignoreLabels) || ignoreLabels.some((l) => typeof l !== 'string')) {
+		throw new Error('ignoreLabels must be a string array');
+	}
 
 	return {
 		githubToken: o.githubToken,
@@ -97,6 +112,8 @@ export function validateInput(input: unknown): InputSchema {
  */
 export function loadUserMapping(input: InputSchema): Record<string, string> {
 	const path = resolve(process.cwd(), input.userMappingFile);
+	// Overrides are parsed like the file, so the annotated { slackId } form works in both.
+	const overrides = parseUserMapping(input.userMapping, 'userMapping input');
 	let fromFile: Record<string, string> = {};
 
 	if (existsSync(path)) {
@@ -108,20 +125,22 @@ export function loadUserMapping(input: InputSchema): Record<string, string> {
 		}
 		fromFile = parseUserMapping(parsed, input.userMappingFile);
 		log.info(`Loaded ${Object.keys(fromFile).length} user mappings from ${input.userMappingFile}.`);
-	} else if (Object.keys(input.userMapping).length === 0) {
+	} else if (Object.keys(overrides).length === 0) {
 		log.warning(
 			`No user mapping: "${input.userMappingFile}" does not exist and the input carries none. Nobody will be tagged.`,
 		);
 	} else {
 		log.warning(
-			`"${input.userMappingFile}" does not exist; using the ${Object.keys(input.userMapping).length} mappings from the input only.`,
+			`"${input.userMappingFile}" does not exist; using the ${Object.keys(overrides).length} mappings from the input only.`,
 		);
 	}
 
-	const overrides = Object.keys(input.userMapping);
-	if (overrides.length > 0) log.info(`Input overrides ${overrides.length} mapping(s): ${overrides.join(', ')}.`);
+	const overrideLogins = Object.keys(overrides);
+	if (overrideLogins.length > 0) {
+		log.info(`Input overrides ${overrideLogins.length} mapping(s): ${overrideLogins.join(', ')}.`);
+	}
 
-	return { ...fromFile, ...input.userMapping };
+	return { ...fromFile, ...overrides };
 }
 
 export function getSeverity(durationHours: number, warning: number, scream: number): Severity {
@@ -165,9 +184,11 @@ export function summarizeReviews(
 
 	for (const r of reviews) {
 		if (r.login === authorLogin) continue;
-		reviewed.add(r.login);
 		const state = r.state.toUpperCase();
-		if (state === 'COMMENTED' || state === 'PENDING') continue;
+		// A pending review has not been submitted, so nobody has looked yet.
+		if (state === 'PENDING') continue;
+		reviewed.add(r.login);
+		if (state === 'COMMENTED') continue;
 		const prev = decisive.get(r.login);
 		if (!prev || r.submittedAt > prev.submittedAt) decisive.set(r.login, r);
 	}
@@ -235,7 +256,7 @@ export type RecordOptions = Pick<
 >;
 
 /** Waiting time as the thresholds see it: calendar time, minus weekends when configured. */
-export function elapsedMs(startedAt: string, now: number, options: RecordOptions): number {
+function elapsedMs(startedAt: string, now: number, options: RecordOptions): number {
 	const startMs = Date.parse(startedAt);
 	if (!options.skipWeekends) return Math.max(0, now - startMs);
 	return businessElapsedMs(startMs, now, options.timeZone);
@@ -253,7 +274,7 @@ export function toPrRecord(e: EnrichedPr, now: number, options: RecordOptions): 
 		options.iterationWarningThresholdHours,
 		options.iterationScreamThresholdHours,
 	);
-	const authorLogin = e.raw.user?.login ?? 'unknown';
+	const authorLogin = e.raw.user?.login ?? UNKNOWN_LOGIN;
 
 	return {
 		repo: e.repo,
@@ -307,7 +328,7 @@ async function enrichPullRequest(github: GithubClient, repo: RepoRef, raw: RawPu
 		reviews,
 		raw.requested_reviewers.map((u) => u.login),
 		raw.requested_teams.length,
-		raw.user?.login ?? '',
+		raw.user?.login ?? UNKNOWN_LOGIN,
 	);
 
 	const linkedNumbers = parseLinkedIssueNumbers(raw.body);
@@ -349,14 +370,22 @@ export async function run(): Promise<void> {
 		throw err;
 	}
 	log.info(`Found ${repos.length} repos matching topic.`);
+	// Nothing scanned is not the same as nothing waiting — an "all clear" report here would be a lie.
+	if (repos.length === 0) {
+		throw new Error(
+			`No repository in org "${input.githubOrg}" carries topic "${input.githubTopic}" — nothing was scanned. Check the org and the topic.`,
+		);
+	}
 
 	const enriched: EnrichedPr[] = [];
 	let drafts = 0;
+	let failedRepos = 0;
 	for (const repo of repos) {
 		let pulls: RawPullRequest[] = [];
 		try {
 			pulls = await github.listOpenPulls(repo);
 		} catch (err) {
+			failedRepos++;
 			log.warning(`Failed to list pulls for ${repo.owner}/${repo.name}: ${(err as Error).message}`);
 			continue;
 		}
@@ -370,6 +399,12 @@ export async function run(): Promise<void> {
 			const e = await enrichPullRequest(github, repo, pr);
 			enriched.push(e);
 		}
+	}
+
+	if (failedRepos === repos.length) {
+		throw new Error(
+			`Failed to list pull requests for all ${failedRepos} scanned repos (see the warnings above) — refusing to report an empty result.`,
+		);
 	}
 
 	const filtered = enriched.filter((e) => shouldIncludePr(e, input.ignoreLabels, input.requireLinkedIssue));
@@ -387,7 +422,7 @@ export async function run(): Promise<void> {
 	await Actor.pushData(records);
 
 	for (const r of records) {
-		if (userMapping[r.notifyLogin]) continue;
+		if (resolveSlackId(userMapping, r.notifyLogin)) continue;
 		if (isBotLogin(r.notifyLogin)) {
 			log.warning(
 				`${r.repo.name}#${r.number} was opened by ${r.notifyLogin} and no linked ticket has an assignee — nobody will be notified.`,
@@ -397,15 +432,17 @@ export async function run(): Promise<void> {
 		}
 	}
 
+	if (records.length === 0 && failedRepos > 0) {
+		log.warning(`${failedRepos} repo(s) could not be scanned, so this empty result may be incomplete.`);
+	}
+
 	if (records.length === 0 && !input.sendEmptyReport) {
 		log.info('No PRs to report and sendEmptyReport=false — skipping Slack notification.');
 		return;
 	}
 
 	const message = buildSlackMessage(records, userMapping, input.headerText, input.newPrHeaderText);
-	log.info('=== SLACK PAYLOAD ===');
-	log.info(message);
-	log.info('=== END SLACK PAYLOAD ===');
+	log.info(`Slack payload:\n${message}`);
 
 	try {
 		await slack.postMessage(input.slackChannelId, message);

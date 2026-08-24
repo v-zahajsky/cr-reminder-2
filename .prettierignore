@@ -2,3 +2,4 @@ node_modules
 dist
 storage
 package-lock.json
+dashboard.json

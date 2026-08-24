@@ -21,10 +21,6 @@ RUN npm run build
 # Create final image
 FROM apify/actor-node:22
 
-# Set environment variables to disable memory snapshots
-ENV APIFY_MEMORY_MBYTES=0
-ENV APIFY_DISABLE_OUTDATED_WARNING=1
-
 # Copy just package.json and package-lock.json
 # to speed up the build using Docker layer cache.
 COPY --chown=myuser:myuser package*.json ./

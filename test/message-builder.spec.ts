@@ -195,6 +195,33 @@ describe('buildSlackMessage', () => {
 		expect(msg.indexOf('u1')).toBeLessThan(msg.indexOf('u3'));
 	});
 
+	it('accounts for every dropped PR line in the "and N more" count', () => {
+		const many = Array.from({ length: 400 }, (_, i) =>
+			makePr({ number: i, url: `https://example.com/pull/${i}`, title: 'x'.repeat(300), reviewedByCount: 1 }),
+		);
+		const msg = buildSlackMessage(many, {}, 'Pull requests in review:', NEW_HEADER);
+		const kept = msg.split('\n').filter((line) => line.includes('https://example.com/pull/')).length;
+		const omitted = Number(/\.\.\.and (\d+) more$/.exec(msg)?.[1]);
+		expect(kept).toBeGreaterThan(0);
+		expect(kept + omitted).toBe(400);
+	});
+
+	it('never claims a truncation that did not happen', () => {
+		const msg = buildSlackMessage([makePr()], {}, 'Pull requests in review:', NEW_HEADER);
+		expect(msg).not.toContain('...and 0 more');
+	});
+
+	it('drops the new-PR section wholesale rather than orphaning its lines', () => {
+		const reviewed = Array.from({ length: 400 }, (_, i) =>
+			makePr({ number: i, url: `https://example.com/pull/${i}`, title: 'x'.repeat(300), reviewedByCount: 1 }),
+		);
+		const untouched = makePr({ number: 999, url: 'https://example.com/pull/new-999', reviewedByCount: 0 });
+		const msg = buildSlackMessage([...reviewed, untouched], {}, 'Pull requests in review:', NEW_HEADER);
+		// A new PR may only be listed when its own header survived the cut.
+		expect(msg.includes('pull/new-999') && !msg.includes(NEW_HEADER)).toBe(false);
+		expect(msg).not.toContain('...and 0 more');
+	});
+
 	it('truncates without leaving a section header stranded', () => {
 		const many = Array.from({ length: 400 }, (_, i) =>
 			makePr({ number: i, url: `https://example.com/pull/${i}`, title: 'x'.repeat(300), reviewedByCount: 1 }),

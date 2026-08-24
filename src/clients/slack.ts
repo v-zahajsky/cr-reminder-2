@@ -1,4 +1,4 @@
-import { WebClient } from '@slack/web-api';
+import { type ChatPostMessageResponse, WebClient } from '@slack/web-api';
 import { log } from 'apify';
 
 const ERROR_HINTS: Record<string, string> = {
@@ -14,9 +14,10 @@ const ERROR_HINTS: Record<string, string> = {
 	is_archived: 'The target channel is archived.',
 };
 
-function describe(err: unknown): string {
-	const code = (err as { data?: { error?: string } }).data?.error;
-	if (!code) return (err as Error).message;
+/** Turns a Slack API rejection into a message that says what to do about it. */
+export function describeSlackError(err: unknown): string {
+	const code = (err as { data?: { error?: string } } | null | undefined)?.data?.error;
+	if (!code) return err instanceof Error ? err.message : String(err);
 	const hint = ERROR_HINTS[code];
 	return hint ? `${code} — ${hint}` : code;
 }
@@ -34,12 +35,12 @@ export class SlackClient {
 			const res = await this.client.auth.test();
 			log.info(`Slack auth OK — bot "${res.user}" in workspace "${res.team}"`);
 		} catch (err) {
-			throw new Error(`Slack auth check failed: ${describe(err)}`);
+			throw new Error(`Slack auth check failed: ${describeSlackError(err)}`);
 		}
 	}
 
 	async postMessage(channelId: string, text: string): Promise<void> {
-		let res;
+		let res: ChatPostMessageResponse;
 		try {
 			res = await this.client.chat.postMessage({
 				channel: channelId,
@@ -49,10 +50,10 @@ export class SlackClient {
 				mrkdwn: true,
 			});
 		} catch (err) {
-			throw new Error(`chat.postMessage to ${channelId} failed: ${describe(err)}`);
+			throw new Error(`chat.postMessage to ${channelId} failed: ${describeSlackError(err)}`);
 		}
 		if (!res.ok) {
-			throw new Error(`chat.postMessage returned not ok: ${JSON.stringify(res)}`);
+			throw new Error(`chat.postMessage to ${channelId} returned not ok: ${res.error ?? 'no error code'}`);
 		}
 		log.info(`Sent Slack message to channel ${channelId} (ts=${res.ts})`);
 	}

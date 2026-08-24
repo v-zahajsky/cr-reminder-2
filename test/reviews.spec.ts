@@ -87,6 +87,13 @@ describe('summarizeReviews', () => {
 		expect(s.reviewerCount).toBe(1);
 	});
 
+	it('treats an unsubmitted (pending) review as nobody having looked', () => {
+		const s = summarizeReviews([review('bob', 'PENDING', '2026-04-20T00:00:00Z')], [], 0, 'alice');
+		expect(s.reviewedByCount).toBe(0);
+		expect(s.approvedCount).toBe(0);
+		expect(s.reviewerCount).toBe(0);
+	});
+
 	it('ignores self-reviews by the PR author', () => {
 		const s = summarizeReviews([review('alice', 'APPROVED', '2026-04-20T00:00:00Z')], ['alice'], 0, 'alice');
 		expect(s.approvedCount).toBe(0);

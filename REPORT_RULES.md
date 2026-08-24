@@ -66,7 +66,7 @@ fix #123        fixes #123       fixed #123
 resolve #123    resolves #123    resolved #123
 ```
 
-Matching is case-insensitive, so `Fixes #123` and `FIXES #123` both work.
+Matching is case-insensitive, so `Fixes #123` and `FIXES #123` both work, and a colon after the keyword is allowed (`Fixes: #123`).
 
 What is **not** detected:
 
@@ -239,6 +239,8 @@ If no PR passes the filters, the behaviour depends on the `sendEmptyReport` sett
 - `false` (default) — the bot stays silent, no Slack message at all.
 - `true` — the bot posts `No open PRs awaiting review. 🎉`
 
+That applies only when the scan actually succeeded. If no repository carries the configured topic, or if listing pull requests failed for every scanned repo, the run **fails** instead of reporting an all-clear — an empty scan is not the same as an empty queue. When only some repos failed, the run continues and logs a warning that the result may be incomplete.
+
 ---
 
 ## Anatomy of a message
@@ -258,7 +260,7 @@ Both durations are working time — weekends are already deducted.
 
 In the example, the first PR has been open for over nine working days but its current round started two days ago (the author re-requested review then), and one of the two people involved has approved. The second PR was never re-requested, so both times are the same.
 
-If the message would exceed the Slack limit of 40 000 characters, the oldest PRs are kept and the rest is summarised as `...and N more`.
+If the message would exceed the Slack limit of 40 000 characters, lines are dropped from the end until it fits and the rest is summarised as `...and N more`. Because the new-PR block is printed last, it is the first to go — within each block the longest-waiting PRs are kept.
 
 ---
 

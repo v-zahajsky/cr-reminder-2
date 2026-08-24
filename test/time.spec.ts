@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { businessElapsedMs, humanDuration, msToDays } from '../src/utils/time.js';
+import { businessElapsedMs, humanDuration } from '../src/utils/time.js';
 
 describe('humanDuration', () => {
 	it('returns "0m" for zero ms', () => {
@@ -30,16 +30,6 @@ describe('humanDuration', () => {
 	});
 });
 
-describe('msToDays', () => {
-	it('converts 1 day', () => {
-		expect(msToDays(86_400_000)).toBe(1);
-	});
-
-	it('gives fractional days', () => {
-		expect(msToDays(43_200_000)).toBe(0.5);
-	});
-});
-
 describe('businessElapsedMs', () => {
 	const TZ = 'Europe/Prague';
 
@@ -66,6 +56,28 @@ describe('businessElapsedMs', () => {
 		const thursday = Date.parse('2026-08-20T10:00:00Z');
 		const tuesday = Date.parse('2026-08-25T10:00:00Z');
 		expect(businessElapsedMs(thursday, tuesday, TZ)).toBe(3 * 86_400_000);
+	});
+
+	// The skipped weekend is bounded by local midnights, so a DST switch inside it moves them.
+	it('follows the clocks forward across the spring DST weekend', () => {
+		const friday = Date.parse('2026-03-27T13:00:00Z'); // Friday 14:00 Prague (CET)
+		const monday = Date.parse('2026-03-30T13:00:00Z'); // Monday 15:00 Prague (CEST)
+		// 10h of Friday (up to 28/03 00:00 local = 27/03 23:00Z) + 15h of Monday (from 29/03 22:00Z).
+		expect(businessElapsedMs(friday, monday, TZ)).toBe(25 * 3_600_000);
+	});
+
+	it('follows the clocks back across the autumn DST weekend', () => {
+		const friday = Date.parse('2026-10-23T13:00:00Z'); // Friday 15:00 Prague (CEST)
+		const monday = Date.parse('2026-10-26T13:00:00Z'); // Monday 14:00 Prague (CET)
+		// 9h of Friday (up to 23/10 22:00Z) + 14h of Monday (from 25/10 23:00Z).
+		expect(businessElapsedMs(friday, monday, TZ)).toBe(23 * 3_600_000);
+	});
+
+	it('does not gain an hour in a zone whose clocks shift at local midnight', () => {
+		// Cairo skips 2023-04-28 00:00 local entirely (EET -> EEST), so that Friday is only 23h long.
+		const thursday = Date.parse('2023-04-27T21:30:00Z'); // Thursday 23:30 Cairo
+		const saturday = Date.parse('2023-04-29T12:00:00Z'); // Saturday 15:00 Cairo, not counted
+		expect(businessElapsedMs(thursday, saturday, 'Africa/Cairo')).toBe(23.5 * 3_600_000);
 	});
 
 	it('respects the time zone when placing the weekend boundary', () => {

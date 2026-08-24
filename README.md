@@ -11,11 +11,11 @@ For the full rule set — written for the people being nagged rather than for de
 3. Skips PRs that are in **draft**, carry a **blocked** label, or link to an issue that carries one. A linked issue is _not_ required unless `requireLinkedIssue` is switched on.
 4. Computes two waiting times per PR — **total age** and **current review round** — with weekends excluded, and grades each against its own thresholds. The worse verdict decides the emoji:
 
-    | Emoji                      | Default           |
-    | -------------------------- | ----------------- |
-    | `:hourglass_flowing_sand:` | below both limits |
-    | `:warning:`                | ≥ 72 h (3 days)   |
-    | `:scream:`                 | ≥ 168 h (7 days)  |
+    | Emoji                      | Default                  |
+    | -------------------------- | ------------------------ |
+    | `:hourglass_flowing_sand:` | below both limits        |
+    | `:warning:`                | ≥ 72 h (3 working days)  |
+    | `:scream:`                 | ≥ 168 h (7 working days) |
 
 5. Posts a compact message to Slack, tagging the PR author — or, for bot-authored PRs, whoever the linked ticket is assigned to. PRs that nobody has reviewed yet are listed in a separate block, because they need a first look rather than a follow-up.
 

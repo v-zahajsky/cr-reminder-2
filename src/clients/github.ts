@@ -3,7 +3,7 @@ import { throttling } from '@octokit/plugin-throttling';
 import { Octokit } from '@octokit/rest';
 import { log } from 'apify';
 
-import type { IssueDetails, PrRecord, RepoRef } from '../types.js';
+import type { IssueDetails, RepoRef } from '../types.js';
 
 const OctokitWithPlugins = Octokit.plugin(retry, throttling);
 
@@ -23,7 +23,7 @@ export interface RawPullRequest {
 
 export interface RawReview {
 	login: string;
-	/** APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED */
+	/** APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | PENDING */
 	state: string;
 	submittedAt: string;
 }
@@ -66,6 +66,10 @@ export class GithubClient {
 			q,
 			per_page: 100,
 		})) {
+			// A timed-out search returns a partial page; without this the report just silently misses repos.
+			if ((res.data as unknown as { incomplete_results?: boolean }).incomplete_results) {
+				log.warning(`GitHub search for "${q}" returned incomplete results — some repos may be missing.`);
+			}
 			for (const r of res.data) {
 				if (r.archived || r.fork) continue;
 				repos.push({ owner: r.owner?.login ?? org, name: r.name });
@@ -91,9 +95,7 @@ export class GithubClient {
 					body: p.body,
 					created_at: p.created_at,
 					draft: Boolean(p.draft),
-					labels: (p.labels || []).map((l: { name?: string } | string) =>
-						typeof l === 'string' ? { name: l } : { name: l.name ?? '' },
-					),
+					labels: p.labels.map((l) => ({ name: l.name })),
 					requested_reviewers: (p.requested_reviewers || []).map((u) => ({ login: u.login })),
 					requested_teams: (p.requested_teams || []).map((t) => ({ slug: t.slug })),
 				});
@@ -147,6 +149,7 @@ export class GithubClient {
 			const out: RawReview[] = [];
 			for (const r of reviews) {
 				const login = r.user?.login;
+				// An unsubmitted (pending) review has no submitted_at and is visible only to its author.
 				if (!login || !r.submitted_at) continue;
 				out.push({ login, state: r.state, submittedAt: r.submitted_at });
 			}
@@ -187,8 +190,4 @@ export class GithubClient {
 			return empty;
 		}
 	}
-}
-
-export function toRawLabels(pr: Pick<PrRecord, 'labels'>): string[] {
-	return pr.labels;
 }

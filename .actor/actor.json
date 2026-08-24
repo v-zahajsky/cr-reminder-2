@@ -50,7 +50,7 @@
 			"userMapping": {
 				"title": "User mapping overrides",
 				"type": "object",
-				"description": "Optional overrides layered on top of the mapping file — handy to fix or add one person without redeploying. Example: { \"radimkvet\": \"U123ABC456\" }",
+				"description": "Optional overrides layered on top of the mapping file — handy to fix or add one person without redeploying. Same two forms as the file: { \"radimkvet\": \"U123ABC456\" } or { \"radimkvet\": { \"slackId\": \"U123ABC456\", \"name\": \"Radim\" } }",
 				"editor": "json",
 				"default": {}
 			},

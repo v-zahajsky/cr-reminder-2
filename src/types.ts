@@ -9,8 +9,8 @@ export interface InputSchema {
 	slackChannelId: string;
 	/** Path to the mapping table, relative to the actor root. */
 	userMappingFile: string;
-	/** Optional per-run overrides layered on top of the file. */
-	userMapping: Record<string, string>;
+	/** Optional per-run overrides layered on top of the file; parsed like the file itself. */
+	userMapping: Record<string, unknown>;
 	mode: Mode;
 	overdueThresholdHours: number;
 	warningThresholdHours: number;

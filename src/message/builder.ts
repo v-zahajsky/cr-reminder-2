@@ -34,7 +34,7 @@ export function isNewPr(pr: PrRecord): boolean {
  * so the bot is named too — otherwise being pinged for a PR you did not write is baffling.
  */
 export function formatAssignee(pr: PrRecord, slackId: string | null): string {
-	const tag = slackId ? `<@${slackId}>` : `@${pr.notifyLogin}`;
+	const tag = slackId ? `<@${slackId}>` : `@${escapeSlack(pr.notifyLogin)}`;
 	if (isBotLogin(pr.authorLogin) && pr.authorLogin !== pr.notifyLogin) {
 		return `${tag} via ${escapeSlack(pr.authorLogin)}`;
 	}
@@ -68,10 +68,14 @@ function truncate(entries: Entry[]): string {
 	const kept: Entry[] = [];
 	let length = 0;
 	let omitted = 0;
+	let full = false;
 
 	for (const entry of entries) {
 		const addition = entry.text.length + (kept.length > 0 ? 1 : 0);
-		if (omitted > 0 || length + addition + TRUNCATION_RESERVE > SLACK_MAX_TEXT_LEN) {
+		// Once one entry no longer fits the rest goes with it: a shorter line further down would
+		// otherwise slip in under a section header that was already dropped.
+		if (full || length + addition + TRUNCATION_RESERVE > SLACK_MAX_TEXT_LEN) {
+			full = true;
 			if (entry.isPr) omitted++;
 			continue;
 		}
@@ -82,7 +86,9 @@ function truncate(entries: Entry[]): string {
 	// A section header left without any of its lines would read as an empty promise.
 	while (kept.length > 0 && !kept[kept.length - 1].isPr) kept.pop();
 
-	return `${kept.map((e) => e.text).join('\n')}\n...and ${omitted} more`;
+	const lines = kept.map((e) => e.text);
+	if (omitted > 0) lines.push(`...and ${omitted} more`);
+	return lines.join('\n');
 }
 
 export function buildSlackMessage(

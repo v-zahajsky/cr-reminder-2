@@ -18,6 +18,11 @@ describe('parseLinkedIssueNumbers', () => {
 		expect(parseLinkedIssueNumbers(body).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7]);
 	});
 
+	it('matches the colon form GitHub also accepts', () => {
+		expect(parseLinkedIssueNumbers('Fixes: #12')).toEqual([12]);
+		expect(parseLinkedIssueNumbers('CLOSES:#13')).toEqual([13]);
+	});
+
 	it('ignores plain "See #99" references', () => {
 		expect(parseLinkedIssueNumbers('See #99 for details')).toEqual([]);
 	});
