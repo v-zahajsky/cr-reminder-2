@@ -23,6 +23,16 @@ const DEFAULT_USER_MAPPING_FILE = 'user-mapping.json';
 /** GitHub reports a null user for a deleted account; the tag and the self-review check must agree on the name. */
 const UNKNOWN_LOGIN = 'unknown';
 
+/**
+ * Two things about the message nobody can infer from the lines themselves: the tag is the PR
+ * author rather than a reviewer, and there is a way to opt out. Each line is wrapped in its own
+ * underscores because Slack italics do not survive a newline.
+ */
+const DEFAULT_FOOTER_TEXT = [
+	'_The tagged person is the PR author — chase your reviewers, or pull in someone new._',
+	'_Really blocked? Put the `blocked` label on the PR and comment why — the bot then leaves it alone._',
+].join('\n');
+
 /** An unset threshold takes the fallback; a non-numeric one would silently make every comparison false. */
 function hoursOption(o: Record<string, unknown>, key: string, fallback: number): number {
 	const value = o[key];
@@ -101,6 +111,7 @@ export function validateInput(input: unknown): InputSchema {
 		sendEmptyReport: o.sendEmptyReport,
 		headerText: (o.headerText as string | undefined) ?? 'Pull requests in review:',
 		newPrHeaderText: (o.newPrHeaderText as string | undefined) ?? 'New PRs — nobody has looked at these yet:',
+		footerText: (o.footerText as string | undefined) ?? DEFAULT_FOOTER_TEXT,
 		ignoreLabels,
 	};
 }
@@ -441,7 +452,7 @@ export async function run(): Promise<void> {
 		return;
 	}
 
-	const message = buildSlackMessage(records, userMapping, input.headerText, input.newPrHeaderText);
+	const message = buildSlackMessage(records, userMapping, input.headerText, input.newPrHeaderText, input.footerText);
 	log.info(`Slack payload:\n${message}`);
 
 	try {

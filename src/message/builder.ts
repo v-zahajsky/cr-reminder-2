@@ -63,8 +63,8 @@ function section(header: string, prs: PrRecord[], userMapping: Record<string, st
 	];
 }
 
-/** Drops PR lines from the end until the message fits, then says how many went. */
-function truncate(entries: Entry[]): string {
+/** Drops PR lines from the end until the message fits the budget, then says how many went. */
+function truncate(entries: Entry[], budget: number): string {
 	const kept: Entry[] = [];
 	let length = 0;
 	let omitted = 0;
@@ -74,7 +74,7 @@ function truncate(entries: Entry[]): string {
 		const addition = entry.text.length + (kept.length > 0 ? 1 : 0);
 		// Once one entry no longer fits the rest goes with it: a shorter line further down would
 		// otherwise slip in under a section header that was already dropped.
-		if (full || length + addition + TRUNCATION_RESERVE > SLACK_MAX_TEXT_LEN) {
+		if (full || length + addition + TRUNCATION_RESERVE > budget) {
 			full = true;
 			if (entry.isPr) omitted++;
 			continue;
@@ -96,6 +96,7 @@ export function buildSlackMessage(
 	userMapping: Record<string, string>,
 	headerText: string,
 	newPrHeaderText: string,
+	footerText = '',
 ): string {
 	if (prs.length === 0) {
 		return `${headerText}\n\nNo open PRs awaiting review. :tada:`;
@@ -109,6 +110,12 @@ export function buildSlackMessage(
 	if (entries.length > 0 && newSection.length > 0) entries.push({ text: '', isPr: false });
 	entries.push(...newSection);
 
+	// The footer explains the lines above it, so it must never be the thing that gets cut:
+	// its length comes off the budget before a single PR line is measured.
+	const footer = footerText.trim() === '' ? [] : ['', footerText];
+	const budget = SLACK_MAX_TEXT_LEN - footer.reduce((sum, line) => sum + line.length + 1, 0);
+
 	const message = entries.map((e) => e.text).join('\n');
-	return message.length <= SLACK_MAX_TEXT_LEN ? message : truncate(entries);
+	const body = message.length <= budget ? message : truncate(entries, budget);
+	return [body, ...footer].join('\n');
 }

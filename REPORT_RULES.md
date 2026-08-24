@@ -49,6 +49,14 @@ Label matching is **case-sensitive**, exactly as GitHub stores it. `blocked` is 
 
 This is the intended escape hatch: label a PR (or its issue) `blocked` and the bot stops nagging about it.
 
+**Put it on the pull request**, and say in a comment what it is waiting for. Both places work, but the PR is the reliable one:
+
+- **The issue label only bites when the link is detected**, and detection reads nothing but a closing keyword in the PR description (section 3.3). Label the issue `blocked` on a PR that says `#123` instead of `Fixes #123`, or that links the ticket through the GitHub sidebar, and the bot keeps chasing it with no hint as to why. A label on the PR always works.
+- **The two say different things.** `blocked` on a ticket means the work cannot proceed; `blocked` on a PR means _do not chase this review_. One ticket can carry several PRs, and a label on it mutes every one of them — including a PR that is perfectly ready to be read.
+- **It is where people look.** Whoever asks "why is my PR not in the report" opens the PR, not the ticket.
+
+Muting a PR with no explanation only moves the confusion — the review silently disappears from everyone's queue. The label takes it off the list; the comment is what tells the team it is still alive.
+
 #### 3.3 Linked issues — optional, but they do work
 
 A linked issue is **not required by default**. When one is present it does two things:
@@ -250,6 +258,9 @@ Pull requests in review:
 
 😱 [google-search] Add retry logic to the scraper - 9d 3h 12m (round 2d 1h 5m) - 1/2 approved (@alice)
 ⚠️ [booking] Fix pagination off-by-one - 4d 0h 45m (round 4d 0h 45m) - 0/1 approved (@bob)
+
+_The tagged person is the PR author — chase your reviewers, or pull in someone new._
+_Really blocked? Put the `blocked` label on the PR and comment why — the bot then leaves it alone._
 ```
 
 Each line is: `emoji` · `[repository]` · `PR title` (a link to the PR) · `total waiting time` (bold) · `round: time in the current review round` · `approvals` (count in bold) · `person to nudge` (plus `via <bot>` when a bot opened it).
@@ -260,7 +271,9 @@ Both durations are working time — weekends are already deducted.
 
 In the example, the first PR has been open for over nine working days but its current round started two days ago (the author re-requested review then), and one of the two people involved has approved. The second PR was never re-requested, so both times are the same.
 
-If the message would exceed the Slack limit of 40 000 characters, lines are dropped from the end until it fits and the rest is summarised as `...and N more`. Because the new-PR block is printed last, it is the first to go — within each block the longest-waiting PRs are kept.
+The two lines at the bottom are the **footer**, and they are there because the lines above them cannot say it: the person tagged is the **author** of the PR, not the reviewer everyone assumes, and a review that genuinely cannot move has a way out (section 3.2). Both are the kind of thing a new team member has no way to guess. The text is configurable via `footerText`, and setting it to an empty string prints no footer at all.
+
+If the message would exceed the Slack limit of 40 000 characters, lines are dropped from the end until it fits and the rest is summarised as `...and N more`. The footer is reserved before any line is measured, so it is never what gets cut — an explanation that disappears exactly on the busiest days would be worthless. Because the new-PR block is printed last, it is the first to go — within each block the longest-waiting PRs are kept.
 
 ---
 
@@ -299,6 +312,7 @@ These knobs live in the actor input on Apify; the values below are the defaults.
 | `sendEmptyReport`                | `false`                                     | Whether to post when nothing is waiting                                                   |
 | `headerText`                     | `Pull requests in review:`                  | Heading of the main block                                                                 |
 | `newPrHeaderText`                | `New PRs — nobody has looked at these yet:` | Heading of the block for PRs nobody has reviewed                                          |
+| `footerText`                     | the two-line legend above                   | Legend under the list; empty string prints none. Never dropped by truncation              |
 | `userMappingFile`                | `user-mapping.json`                         | File holding the GitHub login → Slack user ID table                                       |
 | `userMapping`                    | `{}`                                        | Per-run overrides layered on top of that file                                             |
 

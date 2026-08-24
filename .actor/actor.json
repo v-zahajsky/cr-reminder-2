@@ -1,6 +1,6 @@
 {
 	"actorSpecification": 1,
-	"name": "cr-reminder",
+	"name": "cr-reminder-v2",
 	"title": "Code Review Reminder",
 	"description": "Reminds developers about GitHub Pull Requests waiting for review and posts a compact, tagged message to Slack.",
 	"version": "2.0",
@@ -175,6 +175,13 @@
 				"default": "New PRs — nobody has looked at these yet:",
 				"editor": "textfield",
 				"description": "Heading for the separate block listing PRs that nobody has reviewed yet. The block is omitted when there are none."
+			},
+			"footerText": {
+				"title": "Footer text",
+				"type": "string",
+				"default": "_The tagged person is the PR author — chase your reviewers, or pull in someone new._\n_Really blocked? Put the `blocked` label on the PR and comment why — the bot then leaves it alone._",
+				"editor": "textarea",
+				"description": "Legend printed under the list, explaining that the tag is the PR author and how to mute a PR. Set to an empty string to print no footer. It is reserved before the message is shortened, so it survives truncation."
 			}
 		},
 		"required": ["githubToken", "githubOrg", "githubTopic", "slackBotToken", "slackChannelId", "sendEmptyReport"]

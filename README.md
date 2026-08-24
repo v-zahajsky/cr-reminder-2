@@ -30,11 +30,16 @@ Pull requests in review:
 New PRs — nobody has looked at these yet:
 
 :hourglass_flowing_sand: [google-trends] <URL|chore: adopt safePushData> - *1d 3h 12m* (round 1d 3h 12m) - *0*/4 approved (<@U789GHI>)
+
+_The tagged person is the PR author — chase your reviewers, or pull in someone new._
+_Really blocked? Put the `blocked` label on the PR and comment why — the bot then leaves it alone._
 ```
 
 A PR moves into the second block when **nobody has submitted a review of any kind** — a comment-only review is enough to keep it out. The split has no threshold of its own; the usual rules decide whether a PR is reported at all. Either block is dropped when empty.
 
 Per line: severity emoji, repository, linked PR title, total waiting time (bold), time in the current review round, approvals out of everyone involved (count bold), and the person to nudge.
+
+The footer states the two things no line can convey on its own — that the tag is the **author**, not a reviewer, and that a genuinely blocked PR can be muted. It is reserved before the message is shortened, so it survives truncation; `footerText: ""` drops it.
 
 ## Working time
 
@@ -65,7 +70,7 @@ Optional:
 - `mode`, `overdueThresholdHours`, `warningThresholdHours`, `screamThresholdHours`.
 - `iterationOverdueThresholdHours`, `iterationWarningThresholdHours`, `iterationScreamThresholdHours` — the same limits for the current review round.
 - `requireLinkedIssue` — when true, skip PRs whose description closes no issue.
-- `skipWeekends`, `timeZone`, `headerText`, `newPrHeaderText`, `ignoreLabels`.
+- `skipWeekends`, `timeZone`, `headerText`, `newPrHeaderText`, `footerText`, `ignoreLabels`.
 
 ## Who gets tagged
 

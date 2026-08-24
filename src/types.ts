@@ -24,6 +24,8 @@ export interface InputSchema {
 	sendEmptyReport: boolean;
 	headerText: string;
 	newPrHeaderText: string;
+	/** Legend printed under the list; empty string prints nothing. */
+	footerText: string;
 	ignoreLabels: string[];
 }
 

@@ -238,3 +238,53 @@ describe('isNewPr', () => {
 		expect(isNewPr(makePr({ reviewedByCount: 1 }))).toBe(false);
 	});
 });
+
+describe('buildSlackMessage footer', () => {
+	const FOOTER = '_The tagged person is the PR author._\n_Blocked? Label the PR and say why._';
+
+	it('appends the footer below both sections', () => {
+		const reviewed = makePr({ number: 1, url: 'u1', reviewedByCount: 2 });
+		const untouched = makePr({ number: 2, url: 'u2', reviewedByCount: 0 });
+		const msg = buildSlackMessage([reviewed, untouched], {}, 'Header:', NEW_HEADER, FOOTER);
+
+		expect(msg).toBe(
+			[
+				'Header:',
+				'',
+				formatLine(reviewed, null),
+				'',
+				NEW_HEADER,
+				'',
+				formatLine(untouched, null),
+				'',
+				FOOTER,
+			].join('\n'),
+		);
+	});
+
+	it('adds nothing when the footer text is empty', () => {
+		const withFooter = buildSlackMessage([makePr()], {}, 'Header:', NEW_HEADER, '');
+		const without = buildSlackMessage([makePr()], {}, 'Header:', NEW_HEADER);
+		expect(withFooter).toBe(without);
+		expect(withFooter.endsWith(formatLine(makePr(), null))).toBe(true);
+	});
+
+	it('leaves the all-clear message alone — there is nothing to explain', () => {
+		const msg = buildSlackMessage([], {}, 'Header:', NEW_HEADER, FOOTER);
+		expect(msg).not.toContain(FOOTER);
+	});
+
+	it('keeps the footer when PR lines have to be dropped', () => {
+		const many = Array.from({ length: 400 }, (_, i) =>
+			makePr({ number: i, url: `https://example.com/pull/${i}`, title: 'x'.repeat(300), reviewedByCount: 1 }),
+		);
+		const msg = buildSlackMessage(many, {}, 'Header:', NEW_HEADER, FOOTER);
+
+		expect(msg.length).toBeLessThanOrEqual(40_000);
+		expect(msg.endsWith(FOOTER)).toBe(true);
+		const kept = msg.split('\n').filter((line) => line.includes('https://example.com/pull/')).length;
+		const omitted = Number(/\.\.\.and (\d+) more$/m.exec(msg)?.[1]);
+		expect(kept).toBeGreaterThan(0);
+		expect(kept + omitted).toBe(400);
+	});
+});

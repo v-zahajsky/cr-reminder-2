@@ -25,6 +25,17 @@ describe('validateInput', () => {
 		expect(input.ignoreLabels).toEqual(['blocked']);
 	});
 
+	it('explains the tag and the blocked label in the default footer', () => {
+		const { footerText } = validateInput({ ...REQUIRED });
+		expect(footerText).toContain('PR author');
+		expect(footerText).toContain('`blocked` label on the PR');
+	});
+
+	it('lets an empty footer switch the explanation off', () => {
+		expect(validateInput({ ...REQUIRED, footerText: '' }).footerText).toBe('');
+		expect(validateInput({ ...REQUIRED, footerText: 'custom' }).footerText).toBe('custom');
+	});
+
 	it('defaults the iteration limits to the total-age limits', () => {
 		const input = validateInput({ ...REQUIRED, warningThresholdHours: 10, screamThresholdHours: 20 });
 		expect(input.iterationWarningThresholdHours).toBe(10);
