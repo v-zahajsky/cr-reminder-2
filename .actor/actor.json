@@ -70,13 +70,6 @@
 				"description": "If true, post 'no open PRs' message when nothing is overdue. If false, skip Slack entirely.",
 				"editor": "checkbox"
 			},
-			"headerText": {
-				"title": "Header Text",
-				"type": "string",
-				"default": "Pull requests in review:",
-				"description": "Slack message header line.",
-				"editor": "textfield"
-			},
 			"ignoreLabels": {
 				"title": "Ignore Labels",
 				"type": "array",
@@ -144,16 +137,9 @@
 				"type": "boolean",
 				"default": true,
 				"editor": "checkbox",
-				"description": "Exclude Saturdays and Sundays from every waiting time. A PR that goes ready on Friday afternoon is then still fresh on Monday morning.",
+				"description": "Exclude Saturdays and Sundays from every waiting time. A PR that goes ready on Friday afternoon is then still fresh on Monday morning. Which time zone decides where those boundaries fall is set in config/config.json, not here.",
 				"sectionCaption": "Working time",
 				"sectionDescription": "Weekends are dead time for reviews; counting them makes every Monday look like a crisis."
-			},
-			"timeZone": {
-				"title": "Time zone",
-				"type": "string",
-				"default": "Europe/Prague",
-				"editor": "textfield",
-				"description": "IANA time zone deciding where the weekend boundaries fall (for example \"Europe/Prague\"). Only used when skipWeekends is on."
 			},
 			"requireLinkedIssue": {
 				"title": "Only report PRs linked to an issue",
@@ -162,26 +148,54 @@
 				"editor": "checkbox",
 				"description": "When on, a PR whose description does not close an issue (for example \"Fixes #123\") is skipped entirely. Off by default: every PR in review is reported."
 			},
+			"notifyUnassignedBotPrs": {
+				"title": "List bot PRs with nobody assigned",
+				"type": "boolean",
+				"default": true,
+				"editor": "checkbox",
+				"description": "A PR opened by a bot whose linked issue assigns no human tags nobody. Switch this off to keep those PRs out of the list; switch on the summary below to still see how many there are.",
+				"sectionCaption": "Bot PRs without an assignee",
+				"sectionDescription": "Bot-authored PRs are routed to the assignee of the linked ticket. When there is no assignee there is nobody to tag, so these lines nag the whole channel and nobody in particular."
+			},
+			"summarizeUnassignedBotPrs": {
+				"title": "Summarize bot PRs with nobody assigned",
+				"type": "boolean",
+				"default": false,
+				"editor": "checkbox",
+				"description": "Print a per-repo count of those PRs above the footer, naming the one that has waited longest. Works whether or not they are listed individually."
+			},
+			"reportBlockedPrs": {
+				"title": "Remind about blocked PRs",
+				"type": "boolean",
+				"default": false,
+				"editor": "checkbox",
+				"description": "Print a per-repo count of PRs muted by an ignore label, naming the one open longest. Nobody is tagged — it is a reminder that these PRs still exist, not a review request.",
+				"sectionCaption": "Blocked PRs",
+				"sectionDescription": "An ignore label takes a PR off the list for good. This block is what stops 'off the list' from turning into 'forgotten'."
+			},
+			"blockedPrThresholdHours": {
+				"title": "Blocked PR Threshold (hours)",
+				"type": "integer",
+				"default": 72,
+				"minimum": 0,
+				"editor": "number",
+				"description": "Only blocked PRs open at least this long are counted, measured from when the PR became reviewable (working hours, like every other threshold). Keeps PRs parked this morning out of the block."
+			},
 			"userMappingFile": {
 				"title": "User mapping file",
 				"type": "string",
-				"default": "user-mapping.json",
+				"default": "config/user-mapping.json",
 				"editor": "textfield",
-				"description": "Path (relative to the actor root) of the JSON file holding the GitHub login -> Slack user ID table. Keeping the table in a file means a growing team does not bloat the run input."
+				"description": "Path (relative to the actor root) of the JSON file holding the GitHub login -> Slack user ID table. It sits in the config folder with the other files the actor reads from disk; keeping the table in a file means a growing team does not bloat the run input."
 			},
-			"newPrHeaderText": {
-				"title": "New PR section header",
-				"type": "string",
-				"default": "New PRs — nobody has looked at these yet:",
-				"editor": "textfield",
-				"description": "Heading for the separate block listing PRs that nobody has reviewed yet. The block is omitted when there are none."
-			},
-			"footerText": {
-				"title": "Footer text",
-				"type": "string",
-				"default": "_The tagged person is the PR author — chase your reviewers, or pull in someone new._\n_Really blocked? Put the `blocked` label on the PR and comment why — the bot then leaves it alone._",
-				"editor": "textarea",
-				"description": "Legend printed under the list, explaining that the tag is the PR author and how to mute a PR. Set to an empty string to print no footer. It is reserved before the message is shortened, so it survives truncation."
+			"texts": {
+				"title": "Message text overrides",
+				"type": "object",
+				"editor": "json",
+				"default": {},
+				"description": "Overrides of the message texts, layered over texts.json in the actor root. Pass only the keys you want to change. Known keys: header, newPrHeader, botPrSummaryHeader, blockedPrHeader, footer. An unknown key fails the run, so a typo cannot pass unnoticed; an empty string prints nothing, which is how the footer is switched off. Example: { \"blockedPrHeader\": \"Still blocked:\", \"footer\": \"\" }",
+				"sectionCaption": "Message texts",
+				"sectionDescription": "Every heading and the footer live together in texts.json, so changing the tone of the report means editing one file rather than hunting five input fields. This is the per-run override of that file."
 			}
 		},
 		"required": ["githubToken", "githubOrg", "githubTopic", "slackBotToken", "slackChannelId", "sendEmptyReport"]

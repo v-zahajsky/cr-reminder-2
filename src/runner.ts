@@ -3,12 +3,14 @@ import { resolve } from 'node:path';
 
 import { Actor, log } from 'apify';
 
-import { GithubClient, type RawPullRequest, type RawReview } from './clients/github.js';
+import { GithubClient, type RawPullRequest, type RawReview, type ReviewTimestamps } from './clients/github.js';
 import { SlackClient } from './clients/slack.js';
-import { buildSlackMessage } from './message/builder.js';
+import { buildSlackMessage, isUnassignedBotPr } from './message/builder.js';
 import type { InputSchema, Mode, PrRecord, RepoRef, ReviewSummary, Severity } from './types.js';
+import { type AppConfig, loadConfig } from './utils/config.js';
 import { parseLinkedIssueNumbers } from './utils/linked-issues.js';
-import { assertValidTimeZone, businessElapsedMs, humanDuration } from './utils/time.js';
+import { loadTexts, parseTexts } from './utils/texts.js';
+import { businessElapsedMs, humanDuration } from './utils/time.js';
 import { isBotLogin, parseUserMapping, resolveSlackId } from './utils/user-mapping.js';
 
 const HOUR_MS = 3_600_000;
@@ -17,21 +19,15 @@ const HOUR_MS = 3_600_000;
 const DEFAULT_OVERDUE_HOURS = 24;
 const DEFAULT_WARNING_HOURS = 72;
 const DEFAULT_SCREAM_HOURS = 168;
-const DEFAULT_TIME_ZONE = 'Europe/Prague';
-const DEFAULT_USER_MAPPING_FILE = 'user-mapping.json';
+// Three working days parked is the point at which a blocked PR stops being fresh news.
+const DEFAULT_BLOCKED_PR_HOURS = 72;
+/** Everything the actor reads from disk rather than from the run input lives in one folder. */
+const DEFAULT_USER_MAPPING_FILE = 'config/user-mapping.json';
+const TEXTS_FILE = 'config/texts.json';
+const CONFIG_FILE = 'config/config.json';
 
 /** GitHub reports a null user for a deleted account; the tag and the self-review check must agree on the name. */
 const UNKNOWN_LOGIN = 'unknown';
-
-/**
- * Two things about the message nobody can infer from the lines themselves: the tag is the PR
- * author rather than a reviewer, and there is a way to opt out. Each line is wrapped in its own
- * underscores because Slack italics do not survive a newline.
- */
-const DEFAULT_FOOTER_TEXT = [
-	'_The tagged person is the PR author — chase your reviewers, or pull in someone new._',
-	'_Really blocked? Put the `blocked` label on the PR and comment why — the bot then leaves it alone._',
-].join('\n');
 
 /** An unset threshold takes the fallback; a non-numeric one would silently make every comparison false. */
 function hoursOption(o: Record<string, unknown>, key: string, fallback: number): number {
@@ -76,8 +72,6 @@ export function validateInput(input: unknown): InputSchema {
 
 	const requireLinkedIssue = (o.requireLinkedIssue as boolean | undefined) ?? false;
 	const skipWeekends = (o.skipWeekends as boolean | undefined) ?? true;
-	const timeZone = (o.timeZone as string | undefined) ?? DEFAULT_TIME_ZONE;
-	assertValidTimeZone(timeZone);
 
 	const userMappingFile = (o.userMappingFile as string | undefined) ?? DEFAULT_USER_MAPPING_FILE;
 	const userMapping = (o.userMapping as Record<string, unknown> | undefined) ?? {};
@@ -89,6 +83,22 @@ export function validateInput(input: unknown): InputSchema {
 	if (!Array.isArray(ignoreLabels) || ignoreLabels.some((l) => typeof l !== 'string')) {
 		throw new Error('ignoreLabels must be a string array');
 	}
+
+	// A bot PR with no assignee tags nobody, so listing it is optional; summarising it is the
+	// middle ground between nagging the channel and pretending the PR does not exist.
+	const notifyUnassignedBotPrs = (o.notifyUnassignedBotPrs as boolean | undefined) ?? true;
+	const summarizeUnassignedBotPrs = (o.summarizeUnassignedBotPrs as boolean | undefined) ?? false;
+
+	// An ignored label takes a PR off the list for good; the reminder is what stops "off the list"
+	// from turning into "forgotten". Opt-in, because a team that never mislays a blocked PR
+	// does not need the extra block.
+	const reportBlockedPrs = (o.reportBlockedPrs as boolean | undefined) ?? false;
+	const blockedPrThresholdHours = hoursOption(o, 'blockedPrThresholdHours', DEFAULT_BLOCKED_PR_HOURS);
+
+	// Validated here rather than at send time: a typo in a text key should fail the run before
+	// the GitHub scan, not after it.
+	const texts = (o.texts as Record<string, unknown> | undefined) ?? {};
+	parseTexts(texts, 'texts input');
 
 	return {
 		githubToken: o.githubToken,
@@ -107,11 +117,12 @@ export function validateInput(input: unknown): InputSchema {
 		iterationScreamThresholdHours: iterScream,
 		requireLinkedIssue,
 		skipWeekends,
-		timeZone,
 		sendEmptyReport: o.sendEmptyReport,
-		headerText: (o.headerText as string | undefined) ?? 'Pull requests in review:',
-		newPrHeaderText: (o.newPrHeaderText as string | undefined) ?? 'New PRs — nobody has looked at these yet:',
-		footerText: (o.footerText as string | undefined) ?? DEFAULT_FOOTER_TEXT,
+		notifyUnassignedBotPrs,
+		summarizeUnassignedBotPrs,
+		reportBlockedPrs,
+		blockedPrThresholdHours,
+		texts,
 		ignoreLabels,
 	};
 }
@@ -167,6 +178,16 @@ export function worstSeverity(a: Severity, b: Severity): Severity {
 }
 
 /**
+ * Reopening a PR puts it back in the queue, so both clocks restart there — the stretch it spent
+ * closed was nobody's review time. The ready event stays the floor, so a PR reopened and only
+ * then marked ready is not dragged backwards to the reopen.
+ */
+export function resolveReviewStart(readyForReviewAt: string, lastReopenedAt: string | null): string {
+	if (!lastReopenedAt) return readyForReviewAt;
+	return lastReopenedAt > readyForReviewAt ? lastReopenedAt : readyForReviewAt;
+}
+
+/**
  * A new review round starts when someone is asked to review again. Pushing commits does not
  * reset the clock — the re-request is the explicit "ball is back with you" signal.
  * The PR becoming reviewable is the floor, so a request made while still a draft does not count.
@@ -174,6 +195,25 @@ export function worstSeverity(a: Severity, b: Severity): Severity {
 export function resolveIterationStart(readyForReviewAt: string, lastReviewRequestedAt: string | null): string {
 	if (!lastReviewRequestedAt) return readyForReviewAt;
 	return lastReviewRequestedAt > readyForReviewAt ? lastReviewRequestedAt : readyForReviewAt;
+}
+
+export interface PrClocks {
+	readyForReviewAt: string;
+	iterationStartedAt: string;
+}
+
+/**
+ * Where the two clocks start, from one timeline read. The PR became reviewable at the ready
+ * event, or at its creation when it was never a draft; a reopen pushes that forward. The round
+ * then starts at the later of that and the last re-request, which is what keeps the round from
+ * ever predating the total age.
+ */
+export function resolvePrClocks(createdAt: string, timestamps: ReviewTimestamps): PrClocks {
+	const readyForReviewAt = resolveReviewStart(timestamps.readyForReviewAt ?? createdAt, timestamps.lastReopenedAt);
+	return {
+		readyForReviewAt,
+		iterationStartedAt: resolveIterationStart(readyForReviewAt, timestamps.lastReviewRequestedAt),
+	};
 }
 
 /**
@@ -237,10 +277,25 @@ export interface EnrichedPr {
 	repo: RepoRef;
 	readyForReviewAt: string;
 	iterationStartedAt: string;
+	reopenedCount: number;
+	reopenedAt: string | null;
 	review: ReviewSummary;
 	linkedIssueLabels: Map<number, string[]>;
 	/** Assignees of the linked issues, primary first, deduplicated across issues. */
 	linkedIssueAssignees: string[];
+}
+
+/**
+ * Which ignore labels mute this PR, whether they sit on the PR itself or on a linked issue.
+ * Naming them rather than answering yes/no is what lets the report say why a PR is missing.
+ * Order follows ignoreLabels so the answer does not depend on how GitHub orders labels.
+ */
+export function blockingLabels(e: EnrichedPr, ignoreLabels: string[]): string[] {
+	const present = new Set(e.raw.labels.map((l) => l.name));
+	for (const labels of e.linkedIssueLabels.values()) {
+		for (const l of labels) present.add(l);
+	}
+	return ignoreLabels.filter((l) => present.has(l));
 }
 
 export function shouldIncludePr(e: EnrichedPr, ignoreLabels: string[], requireLinkedIssue = false): boolean {
@@ -248,14 +303,10 @@ export function shouldIncludePr(e: EnrichedPr, ignoreLabels: string[], requireLi
 	// By default every open PR in review is visible; requireLinkedIssue restores the stricter rule.
 	// Either way linked issues still mute PRs by label and route bot PRs to an assignee.
 	if (requireLinkedIssue && e.linkedIssueLabels.size === 0) return false;
-	const ignoreSet = new Set(ignoreLabels);
-	if (e.raw.labels.some((l) => ignoreSet.has(l.name))) return false;
-	for (const labels of e.linkedIssueLabels.values()) {
-		if (labels.some((l) => ignoreSet.has(l))) return false;
-	}
-	return true;
+	return blockingLabels(e, ignoreLabels).length === 0;
 }
 
+/** The run input decides the thresholds; the config file decides where the weekend falls. */
 export type RecordOptions = Pick<
 	InputSchema,
 	| 'warningThresholdHours'
@@ -263,8 +314,9 @@ export type RecordOptions = Pick<
 	| 'iterationWarningThresholdHours'
 	| 'iterationScreamThresholdHours'
 	| 'skipWeekends'
-	| 'timeZone'
->;
+	| 'ignoreLabels'
+> &
+	Pick<AppConfig, 'timeZone'>;
 
 /** Waiting time as the thresholds see it: calendar time, minus weekends when configured. */
 function elapsedMs(startedAt: string, now: number, options: RecordOptions): number {
@@ -298,8 +350,11 @@ export function toPrRecord(e: EnrichedPr, now: number, options: RecordOptions): 
 		createdAt: e.raw.created_at,
 		readyForReviewAt: e.readyForReviewAt,
 		iterationStartedAt: e.iterationStartedAt,
+		reopenedCount: e.reopenedCount,
+		reopenedAt: e.reopenedAt,
 		isDraft: e.raw.draft,
 		labels: e.raw.labels.map((l) => l.name),
+		blockedLabels: blockingLabels(e, options.ignoreLabels),
 		body: e.raw.body ?? '',
 		linkedIssueNumbers: Array.from(e.linkedIssueLabels.keys()),
 		durationMs,
@@ -318,6 +373,20 @@ export function toPrRecord(e: EnrichedPr, now: number, options: RecordOptions): 
 	};
 }
 
+/**
+ * Blocked PRs old enough to be worth a reminder, oldest first.
+ *
+ * The clock is the PR's total age, not how long the label has been on: a label added to a
+ * linked issue leaves no trace on the PR, so "blocked since" is not a number we can read.
+ * The threshold exists to keep freshly parked PRs out — a PR blocked this morning is not
+ * forgotten yet.
+ */
+export function selectBlockedPrs(records: PrRecord[], thresholdHours: number): PrRecord[] {
+	return records
+		.filter((r) => r.blockedLabels.length > 0 && r.durationHours >= thresholdHours)
+		.sort((a, b) => b.durationMs - a.durationMs);
+}
+
 /** In 'overdue' mode a PR qualifies when it breaches either limit. */
 export function applyModeFilter(
 	records: PrRecord[],
@@ -330,9 +399,8 @@ export function applyModeFilter(
 }
 
 async function enrichPullRequest(github: GithubClient, repo: RepoRef, raw: RawPullRequest): Promise<EnrichedPr> {
-	const { readyForReviewAt: readyEvent, lastReviewRequestedAt } = await github.getReviewTimestamps(repo, raw.number);
-	const readyForReviewAt = readyEvent ?? raw.created_at;
-	const iterationStartedAt = resolveIterationStart(readyForReviewAt, lastReviewRequestedAt);
+	const timestamps = await github.getReviewTimestamps(repo, raw.number);
+	const { readyForReviewAt, iterationStartedAt } = resolvePrClocks(raw.created_at, timestamps);
 
 	const reviews = await github.listReviews(repo, raw.number);
 	const review = summarizeReviews(
@@ -353,7 +421,17 @@ async function enrichPullRequest(github: GithubClient, repo: RepoRef, raw: RawPu
 		}
 	}
 
-	return { raw, repo, readyForReviewAt, iterationStartedAt, review, linkedIssueLabels, linkedIssueAssignees };
+	return {
+		raw,
+		repo,
+		readyForReviewAt,
+		iterationStartedAt,
+		reopenedCount: timestamps.reopenedCount,
+		reopenedAt: timestamps.lastReopenedAt,
+		review,
+		linkedIssueLabels,
+		linkedIssueAssignees,
+	};
 }
 
 export async function run(): Promise<void> {
@@ -361,6 +439,10 @@ export async function run(): Promise<void> {
 	const input = validateInput(rawInput);
 
 	const userMapping = loadUserMapping(input);
+	const texts = loadTexts(TEXTS_FILE, input.texts);
+	const config = loadConfig(CONFIG_FILE);
+	// Thresholds come from the run, the weekend calendar from the config file.
+	const recordOptions: RecordOptions = { ...input, ...config };
 
 	const github = new GithubClient(input.githubToken);
 	const slack = new SlackClient(input.slackBotToken);
@@ -421,20 +503,47 @@ export async function run(): Promise<void> {
 	const filtered = enriched.filter((e) => shouldIncludePr(e, input.ignoreLabels, input.requireLinkedIssue));
 	const gate = input.requireLinkedIssue ? 'label and linked-issue filters' : 'label filters';
 	log.info(`${filtered.length}/${enriched.length} non-draft PRs pass ${gate}; ${drafts} drafts skipped.`);
-	if (input.skipWeekends) log.info(`Weekends are excluded from waiting times (time zone ${input.timeZone}).`);
+	if (input.skipWeekends) log.info(`Weekends are excluded from waiting times (time zone ${config.timeZone}).`);
 
 	const now = Date.now();
-	let records = filtered.map((e) => toPrRecord(e, now, input));
+	let records = filtered.map((e) => toPrRecord(e, now, recordOptions));
 	records = applyModeFilter(records, input.mode, input.overdueThresholdHours, input.iterationOverdueThresholdHours);
 	records.sort((a, b) => b.durationMs - a.durationMs);
 
 	log.info(`Mode=${input.mode}: ${records.length} PRs will be reported.`);
 
-	await Actor.pushData(records);
+	// Blocked PRs never reach `records` — the label filter dropped them, which is the point.
+	// They are rebuilt here so the report can remind the team that they are still sitting there.
+	const blockedRecords = input.reportBlockedPrs
+		? selectBlockedPrs(
+				enriched
+					.filter((e) => blockingLabels(e, input.ignoreLabels).length > 0)
+					.map((e) => toPrRecord(e, now, recordOptions)),
+				input.blockedPrThresholdHours,
+			)
+		: [];
+	if (input.reportBlockedPrs) {
+		log.info(
+			`${blockedRecords.length} blocked PR(s) older than ${input.blockedPrThresholdHours}h will be summarized.`,
+		);
+	}
+
+	// Blocked records go to the dataset too — it is the ground truth for "why is my PR missing",
+	// and `blockedLabels` is the answer.
+	await Actor.pushData([...records, ...blockedRecords]);
+
+	const unassignedBotPrs = records.filter(isUnassignedBotPr);
+	if (unassignedBotPrs.length > 0) {
+		log.info(
+			`${unassignedBotPrs.length} bot PR(s) have no assignee to tag (listed=${input.notifyUnassignedBotPrs}, summarized=${input.summarizeUnassignedBotPrs}).`,
+		);
+	}
 
 	for (const r of records) {
 		if (resolveSlackId(userMapping, r.notifyLogin)) continue;
 		if (isBotLogin(r.notifyLogin)) {
+			// Muting them was the point of the toggle — repeating it per PR is just noise.
+			if (!input.notifyUnassignedBotPrs) continue;
 			log.warning(
 				`${r.repo.name}#${r.number} was opened by ${r.notifyLogin} and no linked ticket has an assignee — nobody will be notified.`,
 			);
@@ -447,12 +556,23 @@ export async function run(): Promise<void> {
 		log.warning(`${failedRepos} repo(s) could not be scanned, so this empty result may be incomplete.`);
 	}
 
-	if (records.length === 0 && !input.sendEmptyReport) {
-		log.info('No PRs to report and sendEmptyReport=false — skipping Slack notification.');
+	// The summary is content too: a report that only counts bot PRs is still worth posting.
+	const listedCount = input.notifyUnassignedBotPrs ? records.length : records.length - unassignedBotPrs.length;
+	const hasContent =
+		listedCount > 0 ||
+		(input.summarizeUnassignedBotPrs && unassignedBotPrs.length > 0) ||
+		blockedRecords.length > 0;
+
+	if (!hasContent && !input.sendEmptyReport) {
+		log.info('Nothing to report and sendEmptyReport=false — skipping Slack notification.');
 		return;
 	}
 
-	const message = buildSlackMessage(records, userMapping, input.headerText, input.newPrHeaderText, input.footerText);
+	const message = buildSlackMessage(records, userMapping, texts, {
+		notifyUnassignedBotPrs: input.notifyUnassignedBotPrs,
+		summarizeUnassignedBotPrs: input.summarizeUnassignedBotPrs,
+		blockedPrs: blockedRecords,
+	});
 	log.info(`Slack payload:\n${message}`);
 
 	try {

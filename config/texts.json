@@ -1,0 +1,10 @@
+{
+	"_comment": "Every text of the Slack message. Override single keys with the `texts` input field; keys starting with an underscore are ignored. An unknown key fails the run, so a typo cannot pass unnoticed.",
+	"_footer": "Slack italics do not survive a newline, so each footer line carries its own underscores. Set footer to \"\" to print no legend at all.",
+
+	"header": "Pull requests in review:",
+	"newPrHeader": "New PRs — nobody has looked at these yet:",
+	"botPrSummaryHeader": "Bot PRs with nobody assigned:",
+	"blockedPrHeader": "Blocked PRs — make sure they are not forgotten:",
+	"footer": "_The tagged person is the PR author — chase your reviewers, or pull in someone new._\n_Really blocked? Put the `blocked` label on the PR and comment why — the bot then leaves it alone._"
+}

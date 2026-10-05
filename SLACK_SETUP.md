@@ -50,7 +50,7 @@ The actor tags people using their Slack user ID. For each developer you want tag
 1. In Slack, click the person's avatar to open their profile.
 2. Click the three-dot **More** menu.
 3. Click **Copy member ID** — you'll get something like `U01234ABC`.
-4. Add the mapping to **`user-mapping.json`** in the actor root:
+4. Add the mapping to **`config/user-mapping.json`** in the actor root:
 
     ```json
     {
@@ -65,7 +65,7 @@ The table lives in a file rather than in the run input so it can grow with the t
 
 ### What happens if a mapping is missing?
 
-The actor still includes the PR in the message but prints the person as plaintext `@login` (no real tag, no notification) and logs a warning naming them. Add them to `user-mapping.json` before the next run.
+The actor still includes the PR in the message but prints the person as plaintext `@login` (no real tag, no notification) and logs a warning naming them. Add them to `config/user-mapping.json` before the next run.
 
 ### Who is tagged on a bot's PR?
 

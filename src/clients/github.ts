@@ -28,11 +28,45 @@ export interface RawReview {
 	submittedAt: string;
 }
 
+/** The timeline fields this actor reads; GitHub sends many more, and many more kinds of event. */
+export interface TimelineEvent {
+	event?: string;
+	created_at?: string;
+}
+
 export interface ReviewTimestamps {
 	/** Latest 'ready for review' event, null if the PR was never a draft. */
 	readyForReviewAt: string | null;
 	/** Latest 'review requested' event — starts a new review round. */
 	lastReviewRequestedAt: string | null;
+	/** Latest 'reopened' event — the PR is back in the queue, so its clocks start again there. */
+	lastReopenedAt: string | null;
+	/** How many times the PR has been closed and reopened. */
+	reopenedCount: number;
+}
+
+/** Kept pure, and separate from the fetch, so the event rules can be tested without a GitHub call. */
+export function scanReviewTimeline(events: TimelineEvent[]): ReviewTimestamps {
+	let readyForReviewAt: string | null = null;
+	let lastReviewRequestedAt: string | null = null;
+	let lastReopenedAt: string | null = null;
+	let reopenedCount = 0;
+
+	for (const e of events) {
+		if (!e.created_at) continue;
+		if (e.event === 'ready_for_review') {
+			if (!readyForReviewAt || e.created_at > readyForReviewAt) readyForReviewAt = e.created_at;
+		} else if (e.event === 'review_requested') {
+			if (!lastReviewRequestedAt || e.created_at > lastReviewRequestedAt) {
+				lastReviewRequestedAt = e.created_at;
+			}
+		} else if (e.event === 'reopened') {
+			reopenedCount++;
+			if (!lastReopenedAt || e.created_at > lastReopenedAt) lastReopenedAt = e.created_at;
+		}
+	}
+
+	return { readyForReviewAt, lastReviewRequestedAt, lastReopenedAt, reopenedCount };
 }
 
 export class GithubClient {
@@ -105,8 +139,9 @@ export class GithubClient {
 	}
 
 	/**
-	 * Both timestamps come from a single timeline read: when the PR last became reviewable,
-	 * and when a review was last requested (which opens a new review round).
+	 * One timeline read answers everything the clocks need: when the PR last became reviewable,
+	 * when a review was last requested (which opens a new review round), and whether it has been
+	 * closed and reopened since.
 	 */
 	async getReviewTimestamps(repo: RepoRef, prNumber: number): Promise<ReviewTimestamps> {
 		try {
@@ -116,25 +151,12 @@ export class GithubClient {
 				issue_number: prNumber,
 				per_page: 100,
 			});
-			let readyForReviewAt: string | null = null;
-			let lastReviewRequestedAt: string | null = null;
-			for (const ev of events) {
-				const e = ev as { event?: string; created_at?: string };
-				if (!e.created_at) continue;
-				if (e.event === 'ready_for_review') {
-					if (!readyForReviewAt || e.created_at > readyForReviewAt) readyForReviewAt = e.created_at;
-				} else if (e.event === 'review_requested') {
-					if (!lastReviewRequestedAt || e.created_at > lastReviewRequestedAt) {
-						lastReviewRequestedAt = e.created_at;
-					}
-				}
-			}
-			return { readyForReviewAt, lastReviewRequestedAt };
+			return scanReviewTimeline(events as TimelineEvent[]);
 		} catch (err) {
 			log.warning(
 				`Failed to fetch timeline for ${repo.owner}/${repo.name}#${prNumber}: ${(err as Error).message}`,
 			);
-			return { readyForReviewAt: null, lastReviewRequestedAt: null };
+			return scanReviewTimeline([]);
 		}
 	}
 

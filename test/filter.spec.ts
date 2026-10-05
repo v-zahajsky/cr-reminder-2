@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
 	applyModeFilter,
+	blockingLabels,
 	type EnrichedPr,
 	getSeverity,
 	type RecordOptions,
 	resolveNotifyLogin,
+	selectBlockedPrs,
 	shouldIncludePr,
 	toPrRecord,
 	worstSeverity,
@@ -21,7 +23,50 @@ const THRESHOLDS: RecordOptions = {
 	// Most cases below are about thresholds, not calendars — keep raw elapsed time there.
 	skipWeekends: false,
 	timeZone: 'Europe/Prague',
+	ignoreLabels: ['blocked'],
 };
+
+function severityFor(hours: number): PrRecord['severity'] {
+	if (hours >= 168) return 'scream';
+	if (hours >= 72) return 'warning';
+	return 'ok';
+}
+
+/** A finished record, described by the only thing the filters care about: how long it has waited. */
+function makeRecord(hours: number, iterationHours = hours): PrRecord {
+	return {
+		repo: { owner: 'x', name: 'y' },
+		number: 1,
+		title: 't',
+		url: 'u',
+		authorLogin: 'a',
+		notifyLogin: 'a',
+		linkedIssueAssignees: [],
+		createdAt: '',
+		readyForReviewAt: '',
+		iterationStartedAt: '',
+		reopenedCount: 0,
+		reopenedAt: null,
+		isDraft: false,
+		labels: [],
+		blockedLabels: [],
+		body: '',
+		linkedIssueNumbers: [],
+		durationMs: hours * 3_600_000,
+		durationHours: hours,
+		durationHuman: `${hours}h 0m`,
+		durationWallMs: hours * 3_600_000,
+		iterationMs: iterationHours * 3_600_000,
+		iterationHours,
+		iterationHuman: `${iterationHours}h 0m`,
+		iterationWallMs: iterationHours * 3_600_000,
+		approvedBy: [],
+		approvedCount: 0,
+		reviewerCount: 0,
+		reviewedByCount: 0,
+		severity: severityFor(hours),
+	};
+}
 
 function makeRaw(overrides: Partial<EnrichedPr['raw']> = {}): EnrichedPr['raw'] {
 	return {
@@ -45,6 +90,8 @@ function makeEnriched(overrides: Partial<EnrichedPr> = {}): EnrichedPr {
 		repo: { owner: 'x', name: 'y' },
 		readyForReviewAt: '2026-04-19T00:00:00Z',
 		iterationStartedAt: '2026-04-19T00:00:00Z',
+		reopenedCount: 0,
+		reopenedAt: null,
 		review: { approvedBy: [], approvedCount: 0, reviewerCount: 0, reviewedByCount: 0 },
 		linkedIssueLabels: new Map(),
 		linkedIssueAssignees: [],
@@ -169,6 +216,13 @@ describe('toPrRecord', () => {
 		expect(r.durationHuman).toBe('3d 0m');
 	});
 
+	it('carries the reopen history onto the record', () => {
+		const now = Date.parse('2026-04-23T00:00:00Z');
+		const e = makeEnriched({ reopenedAt: '2026-04-20T00:00:00Z', reopenedCount: 2 });
+		const r = toPrRecord(e, now, THRESHOLDS);
+		expect(r.reopenedCount).toBe(2);
+		expect(r.reopenedAt).toBe('2026-04-20T00:00:00Z');
+	});
 	it('clamps negative durations to 0', () => {
 		const now = Date.parse('2026-04-19T00:00:00Z');
 		const e = makeEnriched({
@@ -226,6 +280,17 @@ describe('toPrRecord', () => {
 		expect(r.approvedBy).toEqual(['bob']);
 	});
 
+	it('records which ignore labels blocked the PR, so the dataset says why it is missing', () => {
+		const now = Date.parse('2026-04-23T00:00:00Z');
+		const e = makeEnriched({ raw: makeRaw({ labels: [{ name: 'blocked' }] }) });
+		expect(toPrRecord(e, now, THRESHOLDS).blockedLabels).toEqual(['blocked']);
+	});
+
+	it('leaves blockedLabels empty on a PR that is genuinely in review', () => {
+		const now = Date.parse('2026-04-23T00:00:00Z');
+		expect(toPrRecord(makeEnriched(), now, THRESHOLDS).blockedLabels).toEqual([]);
+	});
+
 	it('tags the ticket assignee instead of the bot that opened the PR', () => {
 		const now = Date.parse('2026-04-23T00:00:00Z');
 		const e = makeEnriched({
@@ -277,43 +342,7 @@ describe('weekend handling', () => {
 });
 
 describe('applyModeFilter', () => {
-	function severityFor(hours: number): PrRecord['severity'] {
-		if (hours >= 168) return 'scream';
-		if (hours >= 72) return 'warning';
-		return 'ok';
-	}
-
-	function makeRec(hours: number, iterationHours = hours): PrRecord {
-		return {
-			repo: { owner: 'x', name: 'y' },
-			number: 1,
-			title: 't',
-			url: 'u',
-			authorLogin: 'a',
-			notifyLogin: 'a',
-			linkedIssueAssignees: [],
-			createdAt: '',
-			readyForReviewAt: '',
-			iterationStartedAt: '',
-			isDraft: false,
-			labels: [],
-			body: '',
-			linkedIssueNumbers: [],
-			durationMs: hours * 3_600_000,
-			durationHours: hours,
-			durationHuman: `${hours}h 0m`,
-			durationWallMs: hours * 3_600_000,
-			iterationMs: iterationHours * 3_600_000,
-			iterationHours,
-			iterationHuman: `${iterationHours}h 0m`,
-			iterationWallMs: iterationHours * 3_600_000,
-			approvedBy: [],
-			approvedCount: 0,
-			reviewerCount: 0,
-			reviewedByCount: 0,
-			severity: severityFor(hours),
-		};
-	}
+	const makeRec = makeRecord;
 
 	it('returns all records in "all" mode', () => {
 		const recs = [makeRec(12), makeRec(120), makeRec(240)];
@@ -335,5 +364,65 @@ describe('applyModeFilter', () => {
 	it('keeps an old PR even when its current round just started', () => {
 		const recs = [makeRec(480, 2)];
 		expect(applyModeFilter(recs, 'overdue', 24, 24)).toHaveLength(1);
+	});
+});
+
+describe('blockingLabels', () => {
+	it('finds nothing on a PR with neutral labels', () => {
+		const e = makeEnriched({
+			raw: makeRaw({ labels: [{ name: 'bug' }] }),
+			linkedIssueLabels: new Map([[42, ['enhancement']]]),
+		});
+		expect(blockingLabels(e, ['blocked'])).toEqual([]);
+	});
+
+	it('reports an ignore label carried by the PR', () => {
+		const e = makeEnriched({ raw: makeRaw({ labels: [{ name: 'bug' }, { name: 'blocked' }] }) });
+		expect(blockingLabels(e, ['blocked'])).toEqual(['blocked']);
+	});
+
+	it('reports an ignore label carried by a linked issue', () => {
+		const e = makeEnriched({ linkedIssueLabels: new Map([[42, ['blocked']]]) });
+		expect(blockingLabels(e, ['blocked'])).toEqual(['blocked']);
+	});
+
+	it('names the same label once however many places carry it', () => {
+		const e = makeEnriched({
+			raw: makeRaw({ labels: [{ name: 'blocked' }] }),
+			linkedIssueLabels: new Map([
+				[1, ['blocked']],
+				[2, ['on-hold']],
+			]),
+		});
+		expect(blockingLabels(e, ['blocked', 'on-hold'])).toEqual(['blocked', 'on-hold']);
+	});
+
+	it('matches case-sensitively, as GitHub stores labels', () => {
+		const e = makeEnriched({ raw: makeRaw({ labels: [{ name: 'Blocked' }] }) });
+		expect(blockingLabels(e, ['blocked'])).toEqual([]);
+	});
+});
+
+describe('selectBlockedPrs', () => {
+	function makeBlocked(hours: number, blockedLabels: string[] = ['blocked']): PrRecord {
+		return { ...makeRecord(hours), blockedLabels };
+	}
+
+	it('keeps a blocked PR at or above the threshold', () => {
+		expect(selectBlockedPrs([makeBlocked(72)], 72)).toHaveLength(1);
+		expect(selectBlockedPrs([makeBlocked(240)], 72)).toHaveLength(1);
+	});
+
+	it('drops a blocked PR that was blocked recently — nothing to chase yet', () => {
+		expect(selectBlockedPrs([makeBlocked(71)], 72)).toEqual([]);
+	});
+
+	it('ignores PRs that carry no blocking label', () => {
+		expect(selectBlockedPrs([makeBlocked(240, [])], 72)).toEqual([]);
+	});
+
+	it('sorts the oldest first, like every other list', () => {
+		const prs = [makeBlocked(100), makeBlocked(300), makeBlocked(200)];
+		expect(selectBlockedPrs(prs, 72).map((r) => r.durationHours)).toEqual([300, 200, 100]);
 	});
 });

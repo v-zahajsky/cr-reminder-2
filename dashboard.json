@@ -20,7 +20,7 @@
       "githubOrg": "apify-store",
       "githubTopic": "google-team",
       "slackChannelId": "C01234567",
-      "userMappingFile": "user-mapping.json",
+      "userMappingFile": "config/user-mapping.json",
       "userMapping": {},
       "mode": "overdue",
       "overdueThresholdHours": 24,
@@ -31,9 +31,7 @@
       "iterationScreamThresholdHours": 168,
       "requireLinkedIssue": false,
       "skipWeekends": true,
-      "timeZone": "Europe/Prague",
       "sendEmptyReport": false,
-      "headerText": "Pull requests in review:",
       "ignoreLabels": [
         "blocked"
       ]

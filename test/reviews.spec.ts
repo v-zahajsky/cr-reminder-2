@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import type { RawReview } from '../src/clients/github.js';
-import { resolveIterationStart, summarizeReviews } from '../src/runner.js';
+import {
+	type RawReview,
+	type ReviewTimestamps,
+	scanReviewTimeline,
+	type TimelineEvent,
+} from '../src/clients/github.js';
+import { resolveIterationStart, resolvePrClocks, resolveReviewStart, summarizeReviews } from '../src/runner.js';
 
 function review(login: string, state: string, submittedAt: string): RawReview {
 	return { login, state, submittedAt };
@@ -19,6 +24,118 @@ describe('resolveIterationStart', () => {
 	it('ignores a review request made before the PR became reviewable', () => {
 		// Reviewers requested while still a draft — the round starts when the PR went ready.
 		expect(resolveIterationStart('2026-04-20T00:00:00Z', '2026-04-10T00:00:00Z')).toBe('2026-04-20T00:00:00Z');
+	});
+});
+
+function event(name: string, createdAt: string): TimelineEvent {
+	return { event: name, created_at: createdAt };
+}
+
+describe('scanReviewTimeline', () => {
+	it('takes the latest ready_for_review and review_requested', () => {
+		expect(
+			scanReviewTimeline([
+				event('ready_for_review', '2026-04-10T00:00:00Z'),
+				event('review_requested', '2026-04-11T00:00:00Z'),
+				event('ready_for_review', '2026-04-12T00:00:00Z'),
+				event('review_requested', '2026-04-09T00:00:00Z'),
+			]),
+		).toMatchObject({
+			readyForReviewAt: '2026-04-12T00:00:00Z',
+			lastReviewRequestedAt: '2026-04-11T00:00:00Z',
+		});
+	});
+
+	it('counts the reopens and reports the latest one', () => {
+		const scanned = scanReviewTimeline([
+			event('closed', '2026-04-11T00:00:00Z'),
+			event('reopened', '2026-04-12T00:00:00Z'),
+			event('closed', '2026-04-13T00:00:00Z'),
+			event('reopened', '2026-04-20T00:00:00Z'),
+		]);
+		expect(scanned.reopenedCount).toBe(2);
+		expect(scanned.lastReopenedAt).toBe('2026-04-20T00:00:00Z');
+	});
+
+	it('reports no reopen for a PR that was never closed', () => {
+		const scanned = scanReviewTimeline([event('ready_for_review', '2026-04-10T00:00:00Z')]);
+		expect(scanned.reopenedCount).toBe(0);
+		expect(scanned.lastReopenedAt).toBe(null);
+	});
+
+	it('ignores an event with no timestamp', () => {
+		expect(scanReviewTimeline([{ event: 'reopened' }]).reopenedCount).toBe(0);
+	});
+});
+
+describe('resolveReviewStart', () => {
+	it('keeps the ready timestamp when the PR was never reopened', () => {
+		expect(resolveReviewStart('2026-04-10T00:00:00Z', null)).toBe('2026-04-10T00:00:00Z');
+	});
+
+	it('restarts the clock at the reopen', () => {
+		// The days the PR spent closed were nobody's review time.
+		expect(resolveReviewStart('2026-04-10T00:00:00Z', '2026-04-20T00:00:00Z')).toBe('2026-04-20T00:00:00Z');
+	});
+
+	it('ignores a reopen that predates the PR becoming reviewable', () => {
+		// Reopened, then pushed back to draft and readied again — the later event wins.
+		expect(resolveReviewStart('2026-04-20T00:00:00Z', '2026-04-10T00:00:00Z')).toBe('2026-04-20T00:00:00Z');
+	});
+});
+
+function timestamps(over: Partial<ReviewTimestamps> = {}): ReviewTimestamps {
+	return {
+		readyForReviewAt: null,
+		lastReviewRequestedAt: null,
+		lastReopenedAt: null,
+		reopenedCount: 0,
+		...over,
+	};
+}
+
+describe('resolvePrClocks', () => {
+	it('falls back to the creation time when the PR was never a draft', () => {
+		expect(resolvePrClocks('2026-04-10T00:00:00Z', timestamps())).toEqual({
+			readyForReviewAt: '2026-04-10T00:00:00Z',
+			iterationStartedAt: '2026-04-10T00:00:00Z',
+		});
+	});
+
+	it('restarts the round at the reopen too, not just the total age', () => {
+		// The round must never predate the total age, so the re-request from before the
+		// reopen cannot stay as the round start.
+		expect(
+			resolvePrClocks(
+				'2026-04-01T00:00:00Z',
+				timestamps({
+					readyForReviewAt: '2026-04-10T00:00:00Z',
+					lastReviewRequestedAt: '2026-04-11T00:00:00Z',
+					lastReopenedAt: '2026-04-20T00:00:00Z',
+					reopenedCount: 1,
+				}),
+			),
+		).toEqual({
+			readyForReviewAt: '2026-04-20T00:00:00Z',
+			iterationStartedAt: '2026-04-20T00:00:00Z',
+		});
+	});
+
+	it('keeps a review requested after the reopen as the round start', () => {
+		expect(
+			resolvePrClocks(
+				'2026-04-01T00:00:00Z',
+				timestamps({
+					readyForReviewAt: '2026-04-10T00:00:00Z',
+					lastReviewRequestedAt: '2026-04-22T00:00:00Z',
+					lastReopenedAt: '2026-04-20T00:00:00Z',
+					reopenedCount: 1,
+				}),
+			),
+		).toEqual({
+			readyForReviewAt: '2026-04-20T00:00:00Z',
+			iterationStartedAt: '2026-04-22T00:00:00Z',
+		});
 	});
 });
 

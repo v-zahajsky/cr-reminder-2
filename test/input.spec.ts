@@ -25,15 +25,53 @@ describe('validateInput', () => {
 		expect(input.ignoreLabels).toEqual(['blocked']);
 	});
 
-	it('explains the tag and the blocked label in the default footer', () => {
-		const { footerText } = validateInput({ ...REQUIRED });
-		expect(footerText).toContain('PR author');
-		expect(footerText).toContain('`blocked` label on the PR');
+	it('keeps unassigned bot PRs listed and unsummarized unless asked otherwise', () => {
+		const input = validateInput({ ...REQUIRED });
+		expect(input.notifyUnassignedBotPrs).toBe(true);
+		expect(input.summarizeUnassignedBotPrs).toBe(false);
 	});
 
-	it('lets an empty footer switch the explanation off', () => {
-		expect(validateInput({ ...REQUIRED, footerText: '' }).footerText).toBe('');
-		expect(validateInput({ ...REQUIRED, footerText: 'custom' }).footerText).toBe('custom');
+	it('takes the bot PR toggles from the input', () => {
+		const input = validateInput({
+			...REQUIRED,
+			notifyUnassignedBotPrs: false,
+			summarizeUnassignedBotPrs: true,
+		});
+		expect(input.notifyUnassignedBotPrs).toBe(false);
+		expect(input.summarizeUnassignedBotPrs).toBe(true);
+	});
+
+	it('keeps the blocked-PR reminder off unless asked for', () => {
+		const input = validateInput({ ...REQUIRED });
+		expect(input.reportBlockedPrs).toBe(false);
+		expect(input.blockedPrThresholdHours).toBe(72);
+	});
+
+	it('takes the blocked-PR settings from the input', () => {
+		const input = validateInput({
+			...REQUIRED,
+			reportBlockedPrs: true,
+			blockedPrThresholdHours: 48,
+		});
+		expect(input.reportBlockedPrs).toBe(true);
+		expect(input.blockedPrThresholdHours).toBe(48);
+	});
+
+	it('rejects a blocked-PR threshold that is not a non-negative number', () => {
+		expect(() => validateInput({ ...REQUIRED, blockedPrThresholdHours: -1 })).toThrow(
+			/blockedPrThresholdHours must be a non-negative number/,
+		);
+	});
+
+	it('carries the text overrides through untouched', () => {
+		expect(validateInput({ ...REQUIRED }).texts).toEqual({});
+		expect(validateInput({ ...REQUIRED, texts: { footer: '' } }).texts).toEqual({ footer: '' });
+	});
+
+	// Catching the typo before the GitHub scan beats catching it after — or never.
+	it('rejects a misspelled text key up front', () => {
+		expect(() => validateInput({ ...REQUIRED, texts: { footerText: 'oops' } })).toThrow(/unknown text key/);
+		expect(() => validateInput({ ...REQUIRED, texts: { header: 7 } })).toThrow(/must be a string/);
 	});
 
 	it('defaults the iteration limits to the total-age limits', () => {
@@ -72,8 +110,10 @@ describe('validateInput', () => {
 		expect(() => validateInput({ ...REQUIRED, ignoreLabels: ['blocked', 7] })).toThrow(/ignoreLabels/);
 	});
 
-	it('rejects an invalid time zone', () => {
-		expect(() => validateInput({ ...REQUIRED, timeZone: 'Mars/Olympus' })).toThrow(/IANA/);
+	// The time zone is no longer run input — it lives in config/config.json, and config.spec.ts
+	// covers its validation.
+	it('defaults the user mapping to the config folder', () => {
+		expect(validateInput({ ...REQUIRED }).userMappingFile).toBe('config/user-mapping.json');
 	});
 });
 

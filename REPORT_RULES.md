@@ -8,14 +8,14 @@ The reminder bot posts a list of pull requests that are waiting for review into 
 
 A pull request shows up in the report only when **all** of the following are true:
 
-| #   | Condition                                                                                      |
-| --- | ---------------------------------------------------------------------------------------------- |
-| 1   | It lives in a repo of the configured GitHub org that carries the configured **topic**          |
-| 2   | The repo is **not archived** and **not a fork**                                                |
-| 3   | The PR is **open**                                                                             |
-| 4   | The PR is **not a draft**                                                                      |
-| 5   | Neither the PR nor any linked issue carries an **ignored label** (default: `blocked`)          |
-| 6   | In `overdue` mode: it has been waiting **at least `overdueThresholdHours`** (default **24 h**) |
+| #   | Condition                                                                                                                                          |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | It lives in a repo of the configured GitHub org that carries the configured **topic**                                                              |
+| 2   | The repo is **not archived** and **not a fork**                                                                                                    |
+| 3   | The PR is **open**                                                                                                                                 |
+| 4   | The PR is **not a draft**                                                                                                                          |
+| 5   | Neither the PR nor any linked issue carries an **ignored label** (default: `blocked`) — those get their own reminder block instead (section 3.2.1) |
+| 6   | In `overdue` mode: it has been waiting **at least `overdueThresholdHours`** (default **24 h**)                                                     |
 
 Fail any one of them and the PR is invisible to the report.
 
@@ -57,6 +57,25 @@ This is the intended escape hatch: label a PR (or its issue) `blocked` and the b
 
 Muting a PR with no explanation only moves the confusion — the review silently disappears from everyone's queue. The label takes it off the list; the comment is what tells the team it is still alive.
 
+#### 3.2.1 Blocked PRs need not be forgotten
+
+Muting works, and that is exactly the risk: the PR leaves every queue and nobody sees it again. Switch on **`reportBlockedPrs`** and the message ends with a per-repository count of the PRs the ignore labels dropped:
+
+```
+Blocked PRs — make sure they are not forgotten:
+
+• [booking] 3 PRs — oldest <URL|#412 chore: bump dependencies> (*13d 22h 19m*)
+• [google-maps] 1 PR — oldest <URL|#1601 fix: retry on 429> (*4d 5h 2m*)
+```
+
+It is a count, not a review request. **Nobody is tagged** — a blocked PR is not waiting on a reviewer, it is waiting on whatever blocks it, and pinging the author about it every morning is how a useful reminder turns into noise. The block exists so the team can see the pile and ask whether those PRs are still going anywhere.
+
+Only PRs open at least `blockedPrThresholdHours` (default **72**, three working days) are counted, so a PR parked this morning does not appear. **The clock is the PR's total age, not how long the label has been on.** A label added to a linked issue leaves no trace on the pull request, so "blocked since" is not a number the bot can read at all; total age is the honest approximation, and for a PR blocked early in its life the two barely differ.
+
+Repositories are ordered by count, busiest first, and the block survives truncation — exactly like the bot-PR summary (section 7), which follows it when both are on. It is off by default.
+
+With the reminder on, blocked PRs are also written to the dataset, each carrying **`blockedLabels`** — the labels that muted it. That is the quickest possible answer to "why is my PR not in the report".
+
 #### 3.3 Linked issues — optional, but they do work
 
 A linked issue is **not required by default**. When one is present it does two things:
@@ -96,6 +115,7 @@ The clock starts at the moment the PR became reviewable:
 
 - If the PR was ever converted from draft to ready for review, the timer starts at the **most recent** _ready for review_ event.
 - Otherwise (a PR opened directly as non-draft) it starts at the PR **creation time**.
+- Either way, a **reopen** pushes the start forward to the reopen (see below).
 
 So flipping a PR back to draft and then to ready again resets the counter to zero. This is deliberate — a PR pushed back to draft was not waiting on a reviewer during that time.
 
@@ -115,6 +135,20 @@ Worked example, a PR that goes ready **Friday at 15:00**:
 Monday therefore acts as the grace period for anything raised late on Friday: it will not be chased until Tuesday. (A PR that went ready early on Friday morning has already used up a full working day, so it can be flagged on Monday — the weekend is skipped, not the Friday.)
 
 The numbers shown in the message are this weekend-adjusted time, so the durations always match the emoji. The raw calendar time is kept in the dataset as `durationWallMs` / `iterationWallMs` if you need it. Set `skipWeekends` to `false` to go back to plain calendar time.
+
+#### A reopened PR starts again
+
+Closed PRs are never read (section 2), so closing one takes it off the list entirely. Reopening it puts it back — and **restarts both clocks at the moment of the reopen**. The time the PR spent closed was nobody's review time, and charging reviewers for it would put a PR that was reopened this morning straight into 😱 for something nobody could have acted on.
+
+The catch is that the number then hides its own history: `1d 2h 30m` on a PR that has been around for a month reads as a young PR. So the line says it outright:
+
+```
+:hourglass_flowing_sand: [booking] <URL|#412 chore: bump dependencies> - *1d 2h 30m* (round 1d 2h 30m, reopened 2×) - *0*/3 approved (<@U123ABC>)
+```
+
+The count is every reopen in the PR's life, not just the latest one, and it stays on the line for as long as the PR is open. **A PR that was never closed shows nothing extra** — the note only appears where there is something to explain.
+
+Both numbers are in the dataset as `reopenedCount` and `reopenedAt`.
 
 #### Two clocks: total age and current round
 
@@ -166,7 +200,7 @@ The **author** of the PR is tagged, not the reviewer.
 
 Tagging works through an explicit GitHub-login → Slack-user-ID mapping. There is no automatic matching — GitHub and Slack accounts have no reliable common identifier.
 
-The table lives in its own file, **`user-mapping.json`** in the actor root, so it can grow with the team without bloating the run input:
+The table lives in its own file, **`config/user-mapping.json`** in the actor root, so it can grow with the team without bloating the run input:
 
 ```json
 {
@@ -194,6 +228,20 @@ Because being pinged for a PR you did not write is baffling on its own, the line
 ```
 
 If a bot-authored PR links no issue, or no linked issue has an assignee, there is nobody to redirect to: the report tags the bot login itself (without the `via` suffix, which would just repeat it) and the actor logs a warning naming the PR. **Linking and assigning the ticket is what makes a bot PR reach a human.**
+
+Those unreachable lines can be handled two ways, and the switches are independent:
+
+- **`notifyUnassignedBotPrs`** (default on) — turn it off and a bot PR with nobody to tag is left out of both listed sections. It is still scanned, still filtered, still written to the dataset; it simply stops taking up a line that pings no one.
+- **`summarizeUnassignedBotPrs`** (default off) — turn it on and the message ends, just above the footer, with one line per repository: how many such PRs are waiting there and which of them has waited longest.
+
+```
+Bot PRs with nobody assigned:
+
+• [booking] 3 PRs — oldest <URL|#412 chore: bump dependencies> (*13d 22h 19m*)
+• [google-maps] 1 PR — oldest <URL|#1601 fix: retry on 429> (*2d 0h 15m*)
+```
+
+Repositories are ordered by count, busiest first. The summary counts every unassigned bot PR, whether or not it is also listed individually, and it survives truncation just like the footer. Switching the list off and the summary on is the usual combination: the channel sees the size of the backlog without being pinged once per PR.
 
 The dataset keeps both `authorLogin` (who opened it) and `notifyLogin` (who got tagged), so the substitution is auditable.
 
@@ -238,7 +286,7 @@ Details:
 - Reviews by the PR author never count, so self-commenting does not move a PR out of the new section.
 - Either block is omitted entirely when it has no PRs. If every reported PR is new, the message contains only the new-PR heading.
 - Both blocks keep the same longest-waiting-first order, and the line format is identical.
-- The heading text is configurable via `newPrHeaderText`.
+- The heading text is the `newPrHeader` key of `config/texts.json` (see the configuration reference).
 
 ### 10. When nothing is waiting
 
@@ -256,22 +304,22 @@ That applies only when the scan actually succeeded. If no repository carries the
 ```
 Pull requests in review:
 
-😱 [google-search] Add retry logic to the scraper - 9d 3h 12m (round 2d 1h 5m) - 1/2 approved (@alice)
-⚠️ [booking] Fix pagination off-by-one - 4d 0h 45m (round 4d 0h 45m) - 0/1 approved (@bob)
+😱 [google-search] #742 Add retry logic to the scraper - 9d 3h 12m (round 2d 1h 5m) - 1/2 approved (@alice)
+⚠️ [booking] #588 Fix pagination off-by-one - 4d 0h 45m (round 4d 0h 45m) - 0/1 approved (@bob)
 
 _The tagged person is the PR author — chase your reviewers, or pull in someone new._
 _Really blocked? Put the `blocked` label on the PR and comment why — the bot then leaves it alone._
 ```
 
-Each line is: `emoji` · `[repository]` · `PR title` (a link to the PR) · `total waiting time` (bold) · `round: time in the current review round` · `approvals` (count in bold) · `person to nudge` (plus `via <bot>` when a bot opened it).
+Each line is: `emoji` · `[repository]` · `#PR number` and `PR title` (a link to the PR) · `total waiting time` (bold) · `round: time in the current review round` · `approvals` (count in bold) · `person to nudge` (plus `via <bot>` when a bot opened it).
 
-The repository name is prefixed because one report covers every repo carrying the team topic, and PR titles alone (`chore: bump @apify/actor-utils to v0.1.8`, appearing in four repos at once) do not say where the work lives.
+The repository name is prefixed because one report covers every repo carrying the team topic, and PR titles alone (`chore: bump @apify/actor-utils to v0.1.8`, appearing in four repos at once) do not say where the work lives. The PR number is part of the link text itself, so it is visible without opening the link — handy for referring to "#742" in a follow-up comment.
 
 Both durations are working time — weekends are already deducted.
 
 In the example, the first PR has been open for over nine working days but its current round started two days ago (the author re-requested review then), and one of the two people involved has approved. The second PR was never re-requested, so both times are the same.
 
-The two lines at the bottom are the **footer**, and they are there because the lines above them cannot say it: the person tagged is the **author** of the PR, not the reviewer everyone assumes, and a review that genuinely cannot move has a way out (section 3.2). Both are the kind of thing a new team member has no way to guess. The text is configurable via `footerText`, and setting it to an empty string prints no footer at all.
+The two lines at the bottom are the **footer**, and they are there because the lines above them cannot say it: the person tagged is the **author** of the PR, not the reviewer everyone assumes, and a review that genuinely cannot move has a way out (section 3.2). Both are the kind of thing a new team member has no way to guess. The text is the `footer` key of `config/texts.json`, and setting it to an empty string prints no footer at all.
 
 If the message would exceed the Slack limit of 40 000 characters, lines are dropped from the end until it fits and the rest is summarised as `...and N more`. The footer is reserved before any line is measured, so it is never what gets cut — an explanation that disappears exactly on the busiest days would be worthless. Because the new-PR block is printed last, it is the first to go — within each block the longest-waiting PRs are kept.
 
@@ -287,6 +335,7 @@ These often come up as "should it not also…?" — currently, no:
 - **Public holidays.** Only Saturdays and Sundays are skipped; a bank holiday counts as a working day.
 - **CI status, mergeability, conflicts.**
 - **Repos without the team topic**, archived repos and forks — invisible by design.
+- **How long a PR has been blocked.** The reminder block (section 3.2.1) counts a blocked PR by its total age, because the moment a label was added to a linked issue is not visible on the pull request at all.
 
 ---
 
@@ -294,29 +343,68 @@ These often come up as "should it not also…?" — currently, no:
 
 These knobs live in the actor input on Apify; the values below are the defaults. **All thresholds are in hours**, and they measure working time when `skipWeekends` is on.
 
-| Parameter                        | Default                                     | Meaning                                                                                   |
-| -------------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `githubOrg`                      | —                                           | Organization whose repos are scanned                                                      |
-| `githubTopic`                    | —                                           | Only repos carrying this topic are scanned                                                |
-| `mode`                           | `overdue`                                   | `overdue` = only late PRs, `all` = everything eligible                                    |
-| `overdueThresholdHours`          | `24`                                        | In `overdue` mode, hide PRs younger than this — the "someone must look within a day" rule |
-| `warningThresholdHours`          | `72`                                        | From this total age the PR gets ⚠️                                                        |
-| `screamThresholdHours`           | `168`                                       | From this total age the PR gets 😱                                                        |
-| `iterationOverdueThresholdHours` | `24`                                        | In `overdue` mode, report a PR whose current round reaches this age                       |
-| `iterationWarningThresholdHours` | `72`                                        | From this round age the PR gets ⚠️                                                        |
-| `iterationScreamThresholdHours`  | `168`                                       | From this round age the PR gets 😱                                                        |
-| `requireLinkedIssue`             | `false`                                     | When on, skip PRs whose description does not close an issue                               |
-| `skipWeekends`                   | `true`                                      | Exclude Saturdays and Sundays from every waiting time                                     |
-| `timeZone`                       | `Europe/Prague`                             | IANA zone deciding where the weekend boundaries fall                                      |
-| `ignoreLabels`                   | `["blocked"]`                               | Labels (on the PR or its linked issue) that mute a PR                                     |
-| `sendEmptyReport`                | `false`                                     | Whether to post when nothing is waiting                                                   |
-| `headerText`                     | `Pull requests in review:`                  | Heading of the main block                                                                 |
-| `newPrHeaderText`                | `New PRs — nobody has looked at these yet:` | Heading of the block for PRs nobody has reviewed                                          |
-| `footerText`                     | the two-line legend above                   | Legend under the list; empty string prints none. Never dropped by truncation              |
-| `userMappingFile`                | `user-mapping.json`                         | File holding the GitHub login → Slack user ID table                                       |
-| `userMapping`                    | `{}`                                        | Per-run overrides layered on top of that file                                             |
+| Parameter                        | Default                    | Meaning                                                                                   |
+| -------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------- |
+| `githubOrg`                      | —                          | Organization whose repos are scanned                                                      |
+| `githubTopic`                    | —                          | Only repos carrying this topic are scanned                                                |
+| `mode`                           | `overdue`                  | `overdue` = only late PRs, `all` = everything eligible                                    |
+| `overdueThresholdHours`          | `24`                       | In `overdue` mode, hide PRs younger than this — the "someone must look within a day" rule |
+| `warningThresholdHours`          | `72`                       | From this total age the PR gets ⚠️                                                        |
+| `screamThresholdHours`           | `168`                      | From this total age the PR gets 😱                                                        |
+| `iterationOverdueThresholdHours` | `24`                       | In `overdue` mode, report a PR whose current round reaches this age                       |
+| `iterationWarningThresholdHours` | `72`                       | From this round age the PR gets ⚠️                                                        |
+| `iterationScreamThresholdHours`  | `168`                      | From this round age the PR gets 😱                                                        |
+| `requireLinkedIssue`             | `false`                    | When on, skip PRs whose description does not close an issue                               |
+| `skipWeekends`                   | `true`                     | Exclude Saturdays and Sundays from every waiting time                                     |
+| `ignoreLabels`                   | `["blocked"]`              | Labels (on the PR or its linked issue) that mute a PR                                     |
+| `reportBlockedPrs`               | `false`                    | Count the muted PRs per repo above the footer, so they are not forgotten                  |
+| `blockedPrThresholdHours`        | `72`                       | How old a blocked PR must be to be counted there                                          |
+| `sendEmptyReport`                | `false`                    | Whether to post when nothing is waiting                                                   |
+| `userMappingFile`                | `config/user-mapping.json` | File holding the GitHub login → Slack user ID table                                       |
+| `userMapping`                    | `{}`                       | Per-run overrides layered on top of that file                                             |
+| `texts`                          | `{}`                       | Per-run overrides of the message texts, layered on top of `config/texts.json` (see below) |
 
-Constraints: `warningThresholdHours` ≤ `screamThresholdHours`, and `iterationWarningThresholdHours` ≤ `iterationScreamThresholdHours`. Violating either fails the run immediately, as does an unknown `timeZone`.
+Constraints: `warningThresholdHours` ≤ `screamThresholdHours`, and `iterationWarningThresholdHours` ≤ `iterationScreamThresholdHours`. Violating either fails the run immediately.
+
+### What is not run input
+
+Three things the actor reads from disk rather than from the run, all in the **`config/`** folder of the actor:
+
+| File                       | Holds                                                   |
+| -------------------------- | ------------------------------------------------------- |
+| `config/config.json`       | `timeZone` — where the weekend boundaries fall          |
+| `config/texts.json`        | every heading and the footer of the message (see below) |
+| `config/user-mapping.json` | the GitHub login → Slack user ID table (section 7)      |
+
+**The time zone is deliberately not a run setting.** It answers "where is this team", not "what should this run report" — the answer changes roughly never, and offering it as a per-run field only invites it to be changed by accident. It defaults to `Europe/Prague` and is only consulted while `skipWeekends` is on. A zone the platform does not recognise fails the run, as does an unknown key in the file.
+
+### Every text of the message
+
+Headings and the footer are **not** separate input fields. They live together in **`config/texts.json`** in the actor root, because a team changing the tone of the report changes all of them at once, and chasing five scattered fields is how one of them ends up out of step:
+
+| Key                  | Default                                           | Where it appears                                        |
+| -------------------- | ------------------------------------------------- | ------------------------------------------------------- |
+| `header`             | `Pull requests in review:`                        | Heading of the main block, and of the all-clear message |
+| `newPrHeader`        | `New PRs — nobody has looked at these yet:`       | Heading of the block for PRs nobody has reviewed        |
+| `botPrSummaryHeader` | `Bot PRs with nobody assigned:`                   | Heading of the bot-PR summary (section 7)               |
+| `blockedPrHeader`    | `Blocked PRs — make sure they are not forgotten:` | Heading of the blocked-PR block (section 3.2.1)         |
+| `footer`             | the two-line legend above                         | Legend under the list; never dropped by truncation      |
+
+The **`texts`** input field overrides single keys of that file, the same way `userMapping` overrides `config/user-mapping.json` — the escape hatch for changing one line without a redeploy:
+
+```json
+"texts": {
+	"blockedPrHeader": "Zablokované PR:",
+	"footer": ""
+}
+```
+
+Two rules worth knowing:
+
+- **An empty string is a value, not an omission.** `"footer": ""` prints no footer at all; that is how the legend is switched off.
+- **An unknown key fails the run.** A misspelled `blockedPRHeader` would otherwise print the default text forever with nothing to say why, so the actor stops and lists the keys it knows. Keys starting with an underscore are ignored, which is what lets the file carry a `"_comment"`.
+
+Delete `config/texts.json` and the built-in defaults above are used — the actor never depends on the file existing.
 
 ---
 
@@ -326,9 +414,9 @@ Go through these in order; the first one that fails is your answer.
 
 1. Does the repo carry the team **topic**? Is it archived or a fork?
 2. Is the PR **open** and **not a draft**?
-3. Does the PR or its linked issue carry the `blocked` label?
+3. Does the PR or its linked issue carry the `blocked` label? (If so, look for it in the blocked-PR block at the bottom of the message — section 3.2.1.)
 4. Is `requireLinkedIssue` on? If so, does the description really close an issue (`Fixes #123`)?
 5. Has it been waiting long enough for the current mode — either clock, 24 working hours by default? Remember the weekend does not count.
 6. Was it recently flipped from draft to ready? That reset both clocks.
 
-Still unexplained? Every run also stores the full list of reported PRs — including both waiting times, the raw calendar time, severity, approvals and linked issue numbers — in the actor dataset on Apify, which is the ground truth for what the bot saw.
+Still unexplained? Every run also stores the full list of reported PRs — including both waiting times, the raw calendar time, severity, approvals and linked issue numbers — in the actor dataset on Apify, which is the ground truth for what the bot saw. With `reportBlockedPrs` on, the blocked ones are in there too, each naming the labels that muted it in `blockedLabels`.

@@ -20,12 +20,17 @@ export interface InputSchema {
 	iterationScreamThresholdHours: number;
 	requireLinkedIssue: boolean;
 	skipWeekends: boolean;
-	timeZone: string;
 	sendEmptyReport: boolean;
-	headerText: string;
-	newPrHeaderText: string;
-	/** Legend printed under the list; empty string prints nothing. */
-	footerText: string;
+	/** When false, bot PRs that no linked ticket assigns to a human are left out of the list. */
+	notifyUnassignedBotPrs: boolean;
+	/** When true, those bot PRs are counted per repo above the footer instead of vanishing silently. */
+	summarizeUnassignedBotPrs: boolean;
+	/** When true, PRs muted by an ignore label are counted per repo so they are not forgotten. */
+	reportBlockedPrs: boolean;
+	/** How old a blocked PR must be before it is worth reminding anyone about. */
+	blockedPrThresholdHours: number;
+	/** Per-run overrides of the message texts, layered over texts.json and the built-in defaults. */
+	texts: Record<string, unknown>;
 	ignoreLabels: string[];
 }
 
@@ -65,8 +70,14 @@ export interface PrRecord {
 	readyForReviewAt: string;
 	/** Start of the current review round — see resolveIterationStart(). */
 	iterationStartedAt: string;
+	/** How many times the PR was closed and reopened; 0 on a PR that never was. */
+	reopenedCount: number;
+	/** The latest reopen — where both clocks restart. Null when it never happened. */
+	reopenedAt: string | null;
 	isDraft: boolean;
 	labels: string[];
+	/** Ignore labels found on the PR or a linked issue — empty on every reported PR. */
+	blockedLabels: string[];
 	body: string;
 	linkedIssueNumbers: number[];
 	/** Waiting time the thresholds and the message use — weekends excluded when skipWeekends is on. */

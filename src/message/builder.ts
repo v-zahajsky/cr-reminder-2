@@ -1,4 +1,5 @@
 import type { PrRecord, Severity } from '../types.js';
+import type { Texts } from '../utils/texts.js';
 import { isBotLogin, resolveSlackId } from '../utils/user-mapping.js';
 
 const SLACK_MAX_TEXT_LEN = 40_000;
@@ -30,6 +31,14 @@ export function isNewPr(pr: PrRecord): boolean {
 }
 
 /**
+ * A bot opened the PR and no linked ticket named a human, so the tag falls back to the bot.
+ * Such a line pings nobody: it is a repo-hygiene item, not somebody's homework.
+ */
+export function isUnassignedBotPr(pr: PrRecord): boolean {
+	return isBotLogin(pr.authorLogin) && pr.notifyLogin === pr.authorLogin;
+}
+
+/**
  * Whoever should act on the PR. When a bot opened it the tag points at the ticket assignee,
  * so the bot is named too — otherwise being pinged for a PR you did not write is baffling.
  */
@@ -41,11 +50,20 @@ export function formatAssignee(pr: PrRecord, slackId: string | null): string {
 	return tag;
 }
 
+/**
+ * A reopened PR restarted both clocks at the reopen, so the durations next to it describe the
+ * latest run only. The count is what stops a suspiciously young number from reading as the
+ * whole story.
+ */
+function formatReopened(pr: PrRecord): string {
+	return pr.reopenedCount > 0 ? `, reopened ${pr.reopenedCount}×` : '';
+}
+
 export function formatLine(pr: PrRecord, slackId: string | null): string {
 	const emoji = severityEmoji(pr.severity);
 	const repo = escapeSlack(pr.repo.name);
-	const link = `<${pr.url}|${escapeSlack(pr.title)}>`;
-	return `${emoji} [${repo}] ${link} - *${pr.durationHuman}* (round ${pr.iterationHuman}) - ${formatApprovals(pr)} (${formatAssignee(pr, slackId)})`;
+	const link = `<${pr.url}|#${pr.number} ${escapeSlack(pr.title)}>`;
+	return `${emoji} [${repo}] ${link} - *${pr.durationHuman}* (round ${pr.iterationHuman}${formatReopened(pr)}) - ${formatApprovals(pr)} (${formatAssignee(pr, slackId)})`;
 }
 
 interface Entry {
@@ -91,31 +109,81 @@ function truncate(entries: Entry[], budget: number): string {
 	return lines.join('\n');
 }
 
+/** One repo's worth of PRs nobody is being pinged about: how many, and which has waited longest. */
+export function formatRepoSummaryLine(repoName: string, prs: PrRecord[]): string {
+	const oldest = prs.reduce((a, b) => (b.durationMs > a.durationMs ? b : a));
+	const noun = prs.length === 1 ? 'PR' : 'PRs';
+	const link = `<${oldest.url}|#${oldest.number} ${escapeSlack(oldest.title)}>`;
+	return `• [${escapeSlack(repoName)}] ${prs.length} ${noun} — oldest ${link} (*${oldest.durationHuman}*)`;
+}
+
+/** Header plus one line per repo, busiest first; nothing at all when there are no such PRs. */
+export function buildRepoSummary(prs: PrRecord[], header: string): string[] {
+	if (prs.length === 0) return [];
+
+	const byRepo = new Map<string, PrRecord[]>();
+	for (const pr of prs) {
+		const bucket = byRepo.get(pr.repo.name);
+		if (bucket) bucket.push(pr);
+		else byRepo.set(pr.repo.name, [pr]);
+	}
+
+	const lines = Array.from(byRepo.entries())
+		.sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+		.map(([repoName, repoPrs]) => formatRepoSummaryLine(repoName, repoPrs));
+
+	return [header, '', ...lines];
+}
+
+export interface MessageOptions {
+	/** When false, unassigned bot PRs are kept out of the two listed sections. Defaults to true. */
+	notifyUnassignedBotPrs?: boolean;
+	/** When true, those PRs are counted per repo just above the footer. */
+	summarizeUnassignedBotPrs?: boolean;
+	/**
+	 * PRs muted by an ignore label that are worth a reminder. They are not part of `prs` —
+	 * the filters dropped them long before — so the caller decides which ones qualify.
+	 */
+	blockedPrs?: PrRecord[];
+}
+
 export function buildSlackMessage(
 	prs: PrRecord[],
 	userMapping: Record<string, string>,
-	headerText: string,
-	newPrHeaderText: string,
-	footerText = '',
+	texts: Texts,
+	options: MessageOptions = {},
 ): string {
-	if (prs.length === 0) {
-		return `${headerText}\n\nNo open PRs awaiting review. :tada:`;
+	const botPrs = prs.filter(isUnassignedBotPr);
+	// Muted bot PRs still exist; they just stop taking up a line each.
+	const listed = options.notifyUnassignedBotPrs === false ? prs.filter((pr) => !isUnassignedBotPr(pr)) : prs;
+	const summary = options.summarizeUnassignedBotPrs ? buildRepoSummary(botPrs, texts.botPrSummaryHeader) : [];
+	// A blocked PR is nobody's review queue, so it gets a count rather than a line to act on.
+	const blocked = buildRepoSummary(options.blockedPrs ?? [], texts.blockedPrHeader);
+
+	if (listed.length === 0 && summary.length === 0 && blocked.length === 0) {
+		return `${texts.header}\n\nNo open PRs awaiting review. :tada:`;
 	}
 
-	const inReview = prs.filter((pr) => !isNewPr(pr));
-	const untouched = prs.filter(isNewPr);
+	const inReview = listed.filter((pr) => !isNewPr(pr));
+	const untouched = listed.filter(isNewPr);
 
-	const entries = section(headerText, inReview, userMapping);
-	const newSection = section(newPrHeaderText, untouched, userMapping);
+	const entries = section(texts.header, inReview, userMapping);
+	const newSection = section(texts.newPrHeader, untouched, userMapping);
 	if (entries.length > 0 && newSection.length > 0) entries.push({ text: '', isPr: false });
 	entries.push(...newSection);
 
-	// The footer explains the lines above it, so it must never be the thing that gets cut:
-	// its length comes off the budget before a single PR line is measured.
-	const footer = footerText.trim() === '' ? [] : ['', footerText];
-	const budget = SLACK_MAX_TEXT_LEN - footer.reduce((sum, line) => sum + line.length + 1, 0);
+	// The summary stands in for lines that are not printed and the footer explains the ones that
+	// are, so neither may be the thing that gets cut: their length comes off the budget before a
+	// single PR line is measured.
+	const tail = [
+		...(blocked.length > 0 ? ['', ...blocked] : []),
+		...(summary.length > 0 ? ['', ...summary] : []),
+		...(texts.footer.trim() === '' ? [] : ['', texts.footer]),
+	];
+	const budget = SLACK_MAX_TEXT_LEN - tail.reduce((sum, line) => sum + line.length + 1, 0);
 
 	const message = entries.map((e) => e.text).join('\n');
 	const body = message.length <= budget ? message : truncate(entries, budget);
-	return [body, ...footer].join('\n');
+	// With nothing listed the tail is the whole message, so its leading separator has to go.
+	return (body === '' ? tail.slice(1) : [body, ...tail]).join('\n');
 }

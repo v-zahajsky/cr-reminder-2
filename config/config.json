@@ -1,0 +1,6 @@
+{
+	"_comment": "Settings that decide how the actor computes rather than what a run reports. They are deliberately not run input: nobody is expected to change them, and a per-run knob only invites accidents. Unknown keys fail the run; keys starting with an underscore are ignored.",
+	"_timeZone": "IANA zone deciding where the Saturday and Sunday boundaries fall. Only used while skipWeekends is on.",
+
+	"timeZone": "Europe/Prague"
+}
